@@ -178,6 +178,8 @@ class FalJob:
     status: JobStatus = JobStatus.IN_QUEUE
     result: Optional[dict] = None
     attempts: int = 0
+    status_url: Optional[str] = None
+    response_url: Optional[str] = None
 
 
 def get_api_key() -> str:
@@ -328,6 +330,8 @@ def submit(
                 endpoint=spec["endpoint"],
                 idempotency_key=key,
                 attempts=attempt + 1,
+                status_url=resp.get("status_url"),
+                response_url=resp.get("response_url"),
             )
         except FalTransientError as e:
             last_err = e
@@ -340,7 +344,7 @@ def submit(
 def poll_status(job: FalJob, opener: Optional[Callable] = None) -> JobStatus:
     """One status check. Raises on terminal failure states."""
     api_key = get_api_key()
-    url = f"{FAL_QUEUE_BASE}/{job.endpoint}/requests/{job.request_id}/status"
+    url = job.status_url or f"{FAL_QUEUE_BASE}/{job.endpoint}/requests/{job.request_id}/status"
     resp = _http_json("GET", url, api_key, opener=opener)
     status = resp.get("status", "")
     try:
@@ -359,7 +363,7 @@ def poll_status(job: FalJob, opener: Optional[Callable] = None) -> JobStatus:
 def fetch_result(job: FalJob, opener: Optional[Callable] = None) -> dict:
     """Fetch the completed result payload (contains output URLs)."""
     api_key = get_api_key()
-    url = f"{FAL_QUEUE_BASE}/{job.endpoint}/requests/{job.request_id}"
+    url = job.response_url or f"{FAL_QUEUE_BASE}/{job.endpoint}/requests/{job.request_id}"
     resp = _http_json("GET", url, api_key, opener=opener)
     job.result = resp
     job.status = JobStatus.COMPLETED
