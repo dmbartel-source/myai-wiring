@@ -101,27 +101,28 @@ def _multipart_encode(field_name: str, filename: str,
     return body.getvalue(), boundary
 
 
-def upload_image(image_path: str,
-                 opener: Optional[Callable] = None) -> str:
-    """Upload an image to fal.ai storage via the egress gate.
+def _upload_media(path: str, kind: str,
+                  opener: Optional[Callable] = None) -> str:
+    """Upload one media file (kind "image" or "video") to fal.ai storage.
 
-    Returns the hosted file URL. Raises I2VError on failure.
+    Returns the hosted file URL. Metadata is stripped from a temp copy
+    first; the user's original is never modified. Raises I2VError.
     """
     api_key = load_fal_key()
     if not api_key:
         raise I2VError("FAL_API_KEY is not set — cannot upload to fal.ai")
-    if not os.path.isfile(image_path):
-        raise I2VError(f"image not found: {image_path}")
+    if not os.path.isfile(path):
+        raise I2VError(f"media not found: {path}")
     # Privacy: strip ALL metadata before anything leaves the server.
     # Work on a sanitized temp copy; never modify the user's original.
     import tempfile
     from privacy import strip_metadata
     _tmp = tempfile.NamedTemporaryFile(
-        suffix=os.path.splitext(image_path)[1], delete=False)
+        suffix=os.path.splitext(path)[1], delete=False)
     _tmp.close()
     try:
         import shutil
-        shutil.copy2(image_path, _tmp.name)
+        shutil.copy2(path, _tmp.name)
         strip_metadata(_tmp.name)
         with open(_tmp.name, "rb") as f:
             data = f.read()
@@ -131,13 +132,14 @@ def upload_image(image_path: str,
         except OSError:
             pass
     if len(data) > 100 * 1024 * 1024:
-        raise I2VError("image exceeds fal.ai 100 MB upload limit")
-    ctype = mimetypes.guess_type(image_path)[0] or "application/octet-stream"
-    if not ctype.startswith("image/"):
-        raise I2VError(f"not an image (content-type {ctype}): {image_path}")
+        raise I2VError(f"media exceeds fal.ai 100 MB upload limit: {path}")
+    ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    if not ctype.startswith(kind + "/"):
+        article = "an" if kind == "image" else "a"
+        raise I2VError(f"not {article} {kind} (content-type {ctype}): {path}")
 
     body, boundary = _multipart_encode(
-        "file", os.path.basename(image_path), data, ctype)
+        "file", os.path.basename(path), data, ctype)
     req = urllib.request.Request(FAL_UPLOAD_URL, data=body, method="POST")
     req.add_header("Authorization", f"Key {api_key}")
     req.add_header("Content-Type",
@@ -147,13 +149,32 @@ def upload_image(image_path: str,
         with net.gated_urlopen(req, timeout=120, opener=opener) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
-        raise I2VError(f"image upload failed: {e}")
+        raise I2VError(f"media upload failed: {e}")
     # Response shape varies; hunt for the URL.
     url = (payload.get("url") or payload.get("file_url")
            or payload.get("access_url") or "")
     if not url:
         raise I2VError(f"upload returned no URL: {payload}")
     return url
+
+
+def upload_image(image_path: str,
+                 opener: Optional[Callable] = None) -> str:
+    """Upload an image to fal.ai storage via the egress gate.
+
+    Returns the hosted file URL. Raises I2VError on failure.
+    """
+    return _upload_media(image_path, "image", opener=opener)
+
+
+def upload_video(video_path: str,
+                 opener: Optional[Callable] = None) -> str:
+    """Upload a video to fal.ai storage via the egress gate.
+
+    Used for reference-to-video video refs. Returns the hosted file URL.
+    Raises I2VError on failure.
+    """
+    return _upload_media(video_path, "video", opener=opener)
 
 
 def build_i2v_arguments(
@@ -328,13 +349,211 @@ def animate_image(
     return manifest
 
 
+# ------------------------------------------------- reference-to-video ----
+
+# Seedance 2.0 reference-to-video caps (Oct 2026 research).
+REFERENCE_LIMITS = {"image": 9, "video": 3, "audio": 3}
+R2V_MODEL = "seedance-2.0"
+
+# Research pricing figures (Oct 2026): ~$0.30/s at 720p for image refs;
+# video refs get a 40% discount on the request. Re-verify live before
+# quoting billing.
+R2V_USD_PER_SEC = 0.30
+R2V_VIDEO_REF_MULTIPLIER = 0.6
+
+
+def _validate_reference_lists(image_paths: list,
+                              video_paths: list) -> None:
+    image_paths = image_paths or []
+    video_paths = video_paths or []
+    if not image_paths and not video_paths:
+        raise I2VError("reference_to_video needs at least one image or "
+                       "video reference")
+    if len(image_paths) > REFERENCE_LIMITS["image"]:
+        raise I2VError(
+            f"too many image references ({len(image_paths)}); "
+            f"Seedance 2.0 allows up to {REFERENCE_LIMITS['image']}")
+    if len(video_paths) > REFERENCE_LIMITS["video"]:
+        raise I2VError(
+            f"too many video references ({len(video_paths)}); "
+            f"Seedance 2.0 allows up to {REFERENCE_LIMITS['video']}")
+
+
+def build_reference_arguments(
+    image_urls: list[str],
+    shot: "prompt_director.ShotPrompt",
+    video_urls: Optional[list[str]] = None,
+    duration_s: float = 5.0,
+    resolution: str = "720p",
+    **overrides: Any,
+) -> dict:
+    """Build the Seedance 2.0 reference-to-video arguments payload.
+
+    image_urls: 1-9 hosted image URLs (cited in the prompt as @Image1..).
+    video_urls: 0-3 hosted video URLs (cited as @Video1..).
+    shot: a prompt_director.ShotPrompt — use
+    prompt_director.build_reference_prompt() so the prompt references
+    the refs by their @ImageN/@VideoN tags.
+    """
+    image_urls = list(image_urls or [])
+    video_urls = list(video_urls or [])
+    _validate_reference_lists(image_urls, video_urls)
+    args: dict[str, Any] = {
+        "image_urls": image_urls,
+        "prompt": shot.positive,
+        "duration": str(int(duration_s)),
+        "resolution": resolution,
+    }
+    if video_urls:
+        args["video_urls"] = video_urls
+    args.update(overrides)
+    return args
+
+
+def estimate_reference_cost_usd(duration_s: float,
+                                has_video_refs: bool) -> float:
+    """Research-based R2V estimate. Re-verify live before billing."""
+    estimate = R2V_USD_PER_SEC * duration_s
+    if has_video_refs:
+        estimate *= R2V_VIDEO_REF_MULTIPLIER  # 40% video-ref discount
+    return round(estimate, 4)
+
+
+def reference_to_video(
+    image_paths: Optional[list[str]] = None,
+    video_paths: Optional[list[str]] = None,
+    prompt: str = "",
+    duration_s: float = 5.0,
+    resolution: str = "720p",
+    *,
+    image_roles: Optional[list[str]] = None,
+    video_roles: Optional[list[str]] = None,
+    allow_third_party: bool = False,
+    sensitivity: str = "sensitive",
+    effect_id: Optional[str] = None,
+    ledger: Optional["cost_ledger.CostLedger"] = None,
+    jobs_root: Optional[str] = None,
+    camera: str = "static",
+    aspect: str = "16:9",
+    tos_ack: bool = False,
+    seed: Optional[int] = None,
+    opener: Optional[Callable] = None,
+    **r2v_overrides: Any,
+) -> dict:
+    """Reference-to-video pipeline (Seedance 2.0). Returns a manifest dict.
+
+    Uploads up to 9 image refs + up to 3 video refs and generates video
+    guided by them — the multi-reference path for stronger character /
+    model consistency. Single-image calls should keep using
+    image_to_video() via animate_image(); this is the 2+ refs route.
+
+    Gates (fail closed, in order): ToS -> privacy (every ref asset) ->
+    cost. The paid call happens only after all three pass.
+
+    The prompt is engineered by prompt_director.build_reference_prompt()
+    so refs are cited as @Image1..@ImageN / @Video1..@VideoM by role.
+    image_roles / video_roles align positionally with image_paths /
+    video_paths; omitted roles get sensible defaults. The prompt is
+    passed to fal.ai exactly as engineered — this code never filters,
+    sanitizes, or alters prompt content for any reason.
+    """
+    image_paths = list(image_paths or [])
+    video_paths = list(video_paths or [])
+    _validate_reference_lists(image_paths, video_paths)
+
+    # 1. ToS gate.
+    spec = fal_client.require_route(R2V_MODEL, tos_ack=tos_ack)
+    tier = spec["tier"]
+    route_tos = spec["tos"]
+
+    # 2. Privacy gate: every reference asset is authorized individually.
+    assets = ([privacy.Asset(path=p, sensitivity=sensitivity)
+               for p in image_paths]
+              + [privacy.Asset(path=p, sensitivity=sensitivity)
+                 for p in video_paths])
+    for asset in assets:
+        privacy.authorize_third_party(
+            asset, allow_third_party=allow_third_party,
+            route_tos=route_tos, model=R2V_MODEL)
+
+    # 3. Cost gate.
+    estimate = estimate_reference_cost_usd(duration_s,
+                                           has_video_refs=bool(video_paths))
+    effect_id = effect_id or f"r2v-{int(time.time())}"
+    ledger = ledger or cost_ledger.CostLedger(default_ledger_path())
+    auth = ledger.authorize(effect_id, tier, estimate)
+
+    # 4. Upload all references (egress-gated, metadata stripped).
+    image_urls = [upload_image(p, opener=opener) for p in image_paths]
+    video_urls = [upload_video(p, opener=opener) for p in video_paths]
+
+    # 5. Engineer the reference prompt, submit, wait.
+    shot = prompt_director.build_reference_prompt(
+        image_roles=image_roles, video_roles=video_roles,
+        n_images=len(image_urls), n_videos=len(video_urls),
+        motion=prompt, camera=camera, duration_s=duration_s, aspect=aspect)
+    arguments = build_reference_arguments(
+        image_urls, shot, video_urls=video_urls, duration_s=duration_s,
+        resolution=resolution, **r2v_overrides)
+    if seed is not None:
+        arguments["seed"] = seed
+    job = fal_client.submit(R2V_MODEL, arguments, opener=opener,
+                            tos_ack=tos_ack)
+    result = fal_client.wait(job, opener=opener)
+
+    # 6. Download immediately (provider URLs expire).
+    video_url = _extract_video_url(result)
+    jobs_root = jobs_root or default_jobs_root()
+    take_dir = os.path.join(jobs_root, effect_id, "takes")
+    os.makedirs(take_dir, exist_ok=True)
+    dest = os.path.join(take_dir, "take01.mp4")
+    fal_client.download_to_file(video_url, dest, opener=opener)
+
+    # 7. Record actual spend.
+    ledger.record_actual(effect_id, tier, estimate,
+                         detail=f"r2v {R2V_MODEL} {duration_s}s "
+                                f"{len(image_urls)}img/{len(video_urls)}vid")
+
+    manifest = {
+        "effect_id": effect_id,
+        "model": R2V_MODEL,
+        "tier": tier,
+        "estimate_usd": estimate,
+        "authorization": auth,
+        "image_urls": image_urls,
+        "video_urls": video_urls,
+        "prompt": shot.to_dict(),
+        "request_id": job.request_id,
+        "output_path": dest,
+        "video_url": video_url,
+    }
+    if isinstance(result.get("actual_prompt"), str):
+        manifest["actual_prompt"] = result["actual_prompt"]
+    return manifest
+
+
 def main(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(description="fal.ai image-to-video")
-    ap.add_argument("image", help="input image path")
-    ap.add_argument("prompt", help="motion description")
+    ap.add_argument("image", nargs="?", default=None,
+                    help="input image path (single-image mode)")
+    ap.add_argument("prompt", nargs="?", default=None,
+                    help="motion description")
+    ap.add_argument("--reference-images", nargs="+", default=None,
+                    help="2-9 reference images for better character "
+                         "consistency (reference-to-video mode)")
+    ap.add_argument("--reference-videos", nargs="+", default=None,
+                    help="up to 3 reference video clips "
+                         "(reference-to-video mode)")
+    ap.add_argument("--image-role", nargs="+", default=None,
+                    help="role labels for --reference-images, in order "
+                         '(e.g. "character front view" "outfit detail")')
+    ap.add_argument("--video-role", nargs="+", default=None,
+                    help="role labels for --reference-videos, in order")
     ap.add_argument("--model", default="seedance-mini", choices=list(I2V_MODELS))
     ap.add_argument("--duration", type=float, default=5.0)
+    ap.add_argument("--resolution", default="720p",
+                    help="reference-to-video resolution (e.g. 720p, 1080p)")
     ap.add_argument("--allow-third-party", action="store_true")
     ap.add_argument("--effect-id", default=None)
     ap.add_argument("--enable-prompt-expansion", action="store_true",
@@ -346,11 +565,26 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=None,
                     help="integer seed for reproducibility")
     a = ap.parse_args(argv)
-    manifest = animate_image(
-        a.image, a.prompt, model=a.model, duration_s=a.duration,
-        allow_third_party=a.allow_third_party, effect_id=a.effect_id,
-        enable_prompt_expansion=a.enable_prompt_expansion,
-        end_image_url=a.end_image_url, seed=a.seed)
+    if a.reference_images or a.reference_videos:
+        if not a.prompt:
+            ap.error("a prompt is required with --reference-images/"
+                     "--reference-videos")
+        manifest = reference_to_video(
+            image_paths=a.reference_images, video_paths=a.reference_videos,
+            prompt=a.prompt, duration_s=a.duration,
+            resolution=a.resolution, image_roles=a.image_role,
+            video_roles=a.video_role,
+            allow_third_party=a.allow_third_party, effect_id=a.effect_id,
+            seed=a.seed)
+    else:
+        if not a.image or not a.prompt:
+            ap.error("image and prompt are required (or use "
+                     "--reference-images/--reference-videos)")
+        manifest = animate_image(
+            a.image, a.prompt, model=a.model, duration_s=a.duration,
+            allow_third_party=a.allow_third_party, effect_id=a.effect_id,
+            enable_prompt_expansion=a.enable_prompt_expansion,
+            end_image_url=a.end_image_url, seed=a.seed)
     print(json.dumps({k: v for k, v in manifest.items()
                       if k != "prompt"}, indent=2))
     return 0
