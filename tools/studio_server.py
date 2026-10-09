@@ -138,9 +138,12 @@ GENERATE_OPTIONS = [
     {"id": "i2v",
      "name": "Animate Photo (AI)",
      "badge": "$",
-     "cost": "~$0.05\u20130.15/clip",
-     "description": "Real AI motion from your photo (fal.ai).",
+     "cost": "~$0.06/clip single; ~$1.50/clip w/ refs",
+     "description": ("Real AI motion from your photo (fal.ai). Select 1 photo "
+                     "to animate, or 2-9 photos (and up to 3 short clips) "
+                     "for better character consistency."),
      "needs_media": "image",
+     "multi_ref": True,
      "needs_prompt": True,
      "paid": True},
     {"id": "kenburns_free",
@@ -348,26 +351,49 @@ def _run_job(job_id: str) -> None:
                         pan=(float(pan[0]), float(pan[1])),
                         fps=int(merged.get("fps", 30)))
         elif kind == "paid_generate":
-            # Paid fal.ai image-to-video. David approved fal.ai + funding.
+            # Paid fal.ai generation. David approved fal.ai + funding.
+            # mode "i2v": single-image animate. mode "r2v": Seedance 2.0
+            # reference-to-video with 2+ image refs and/or video refs.
             try:
-                from i2v_client import animate_image
+                from i2v_client import animate_image, reference_to_video
             except ImportError:
                 import sys
                 sys.path.insert(0, os.path.dirname(__file__))
-                from i2v_client import animate_image
-            manifest = animate_image(
-                mpath,
-                job["params"].get("prompt", ""),
-                model=job["params"].get("model", "seedance-mini"),
-                duration_s=float(job["params"].get("duration_s", 5.0)),
-                allow_third_party=True,  # David approved fal.ai
-                tos_ack=True,            # David approved the terms
-                jobs_root=RESULTS_DIR,
-            )
+                from i2v_client import animate_image, reference_to_video
+            mode = job["params"].get("mode", "i2v")
+            if mode == "r2v":
+                ref_names = job["params"].get("reference_media") or []
+                ref_paths = [p for p in
+                             (safe_media_path(n) for n in ref_names) if p]
+                image_paths = [p for p in ref_paths
+                               if media_type(os.path.basename(p)) == "image"]
+                video_paths = [p for p in ref_paths
+                               if media_type(os.path.basename(p)) == "video"]
+                manifest = reference_to_video(
+                    image_paths=image_paths or None,
+                    video_paths=video_paths or None,
+                    prompt=job["params"].get("prompt", ""),
+                    duration_s=float(job["params"].get("duration_s", 5.0)),
+                    allow_third_party=True,  # David approved fal.ai
+                    tos_ack=True,            # David approved the terms
+                    jobs_root=RESULTS_DIR,
+                )
+                result_suffix = "r2v"
+            else:
+                manifest = animate_image(
+                    mpath,
+                    job["params"].get("prompt", ""),
+                    model=job["params"].get("model", "seedance-mini"),
+                    duration_s=float(job["params"].get("duration_s", 5.0)),
+                    allow_third_party=True,  # David approved fal.ai
+                    tos_ack=True,            # David approved the terms
+                    jobs_root=RESULTS_DIR,
+                )
+                result_suffix = "i2v"
             out = manifest["output_path"]
             # Copy to jobdir with a clean name.
             import shutil
-            result_name = f"{base}_i2v.mp4"
+            result_name = f"{base}_{result_suffix}.mp4"
             dest = os.path.join(jobdir, result_name)
             shutil.copy2(out, dest)
             out = dest
@@ -664,10 +690,11 @@ class StudioHandler(BaseHTTPRequestHandler):
             return
         if opt["needs_media"]:
             mpath = safe_media_path(media)
-            if mpath is None:
+            if mpath is None and not (body.get("reference_images") or
+                                      body.get("reference_videos")):
                 self._send_json({"error": f"media {media!r} not found"}, 404)
                 return
-            if media_type(media) != opt["needs_media"]:
+            if mpath is not None and media_type(media) != opt["needs_media"]:
                 self._send_json(
                     {"error": f"this needs an {opt['needs_media']}"}, 400)
                 return
@@ -684,7 +711,59 @@ class StudioHandler(BaseHTTPRequestHandler):
                             "image-to-video is ready now."),
             })
             return
-        # Launch the paid I2V job in the background.
+        # Reference media: 2-9 images and/or up to 3 short videos for
+        # Seedance 2.0 reference-to-video (better character consistency).
+        ref_names = []
+        for key in ("reference_images", "reference_videos"):
+            val = body.get(key) or []
+            if not isinstance(val, list):
+                self._send_json({"error": f"{key} must be a list"}, 400)
+                return
+            ref_names.extend(val)
+        ref_paths = []
+        for n in ref_names:
+            p = safe_media_path(n)
+            if p is None:
+                self._send_json({"error": f"media {n!r} not found"}, 404)
+                return
+            ref_paths.append((n, p))
+        ref_images = [p for n, p in ref_paths
+                      if media_type(n) == "image"]
+        ref_videos = [p for n, p in ref_paths
+                      if media_type(n) == "video"]
+        # Any non-image/non-video ref is rejected.
+        if len(ref_images) + len(ref_videos) != len(ref_paths):
+            self._send_json({"error": "reference media must be images "
+                                      "or videos"}, 400)
+            return
+        if ref_images or ref_videos:
+            # Multi-reference route (Seedance 2.0 reference-to-video).
+            try:
+                from i2v_client import estimate_reference_cost_usd
+            except ImportError:
+                import sys
+                sys.path.insert(0, os.path.dirname(__file__))
+                from i2v_client import estimate_reference_cost_usd
+            if len(ref_images) > 9 or len(ref_videos) > 3:
+                self._send_json(
+                    {"error": "max 9 reference images and 3 reference "
+                              "videos"}, 400)
+                return
+            est = estimate_reference_cost_usd(5.0,
+                                              has_video_refs=bool(ref_videos))
+            job_media = (ref_images + ref_videos)[0]
+            job_id = JOBS.new(os.path.basename(job_media), "paid_generate",
+                              gen_id, {
+                                  "mode": "r2v",
+                                  "prompt": prompt,
+                                  "reference_media": ref_names,
+                                  "duration_s": 5.0,
+                              })
+            POOL.submit(_run_job, job_id)
+            self._send_json({"job_id": job_id, "status": "started",
+                             "estimate": f"~${est:.2f}/clip"})
+            return
+        # Launch the paid single-image I2V job in the background.
         mpath = safe_media_path(media)
         job_id = JOBS.new(media, "paid_generate", gen_id, {
             "prompt": prompt,
