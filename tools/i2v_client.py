@@ -53,12 +53,14 @@ def load_fal_key() -> str:
 
 try:
     from . import fal_client
+    from . import venice_client
     from . import net
     from . import privacy
     from . import cost_ledger
     from . import prompt_director
 except ImportError:  # tools/ used as plain scripts dir
     import fal_client
+    import venice_client
     import net
     import privacy
     import cost_ledger
@@ -68,7 +70,9 @@ except ImportError:  # tools/ used as plain scripts dir
 # Draft-tier, ToS-approved, i2v-capable. wan-25 and seedance-mini only —
 # conditional/hero models (veo3 etc.) need David's written clearance and
 # are intentionally NOT offered here; use tools/fal_client.py directly.
-I2V_MODELS = ("wan-25", "seedance-mini")
+# Venice models (venice-wan3, venice-wan27-uncensored) added Oct 2026 —
+# no platform-level content filter; consent attestation for faces.
+I2V_MODELS = ("wan-25", "seedance-mini", "venice-wan3", "venice-wan27-uncensored")
 
 # fal.ai file storage upload (two-step: initiate -> PUT bytes).
 # As of 2026 the old one-step https://fal.run/storage/upload multipart endpoint
@@ -88,6 +92,8 @@ I2V_ARGUMENT_DEFAULTS = {
     "wan-25": {"duration": "5"},
     "seedance-mini": {"duration": "5", "resolution": "720p",
                       "aspect_ratio": "16:9", "generate_audio": False},
+    "venice-wan3": {"duration": "5s", "resolution": "720p"},
+    "venice-wan27-uncensored": {"duration": "5s", "resolution": "720p"},
 }
 
 
@@ -295,8 +301,20 @@ def animate_image(
     what prompt was actually used (Wan 2.5 with expansion enabled) —
     compare it against your input to see what the rewriter changed.
     """
-    # 1. ToS gate + model support check.
-    spec = fal_client.require_route(model, tos_ack=tos_ack)
+    # 0. Provider dispatch: Venice vs fal.ai.
+    is_venice = model.startswith("venice-")
+    if is_venice:
+        if model not in venice_client.VENICE_MODELS:
+            raise I2VError(
+                f"model {model!r} is not a known Venice model; "
+                f"supported: {list(venice_client.VENICE_MODELS)}")
+        vspec = venice_client.VENICE_MODELS[model]
+        # Venice has no platform content filter; ToS gate is a pass-through.
+        # David's pre-vetting (consenting adult / AI-generated) is the gate.
+        spec = {"tos": "approved", "tier": "paid", "supports": ["i2v"]}
+    else:
+        # 1. ToS gate + model support check.
+        spec = fal_client.require_route(model, tos_ack=tos_ack)
     if model not in I2V_MODELS or "i2v" not in spec.get("supports", []):
         raise I2VError(
             f"model {model!r} is not offered for I2V here; "
@@ -312,7 +330,10 @@ def animate_image(
         route_tos=route_tos, model=model)
 
     # 3. Cost gate.
-    estimate = fal_client.estimate_cost_usd(model, duration_s, tos_ack=tos_ack)
+    if is_venice:
+        estimate = venice_client.estimate_cost(model, duration_s)
+    else:
+        estimate = fal_client.estimate_cost_usd(model, duration_s, tos_ack=tos_ack)
     tier = spec["tier"]
     effect_id = effect_id or f"i2v-{int(time.time())}"
     ledger = ledger or cost_ledger.CostLedger(default_ledger_path())
@@ -336,11 +357,25 @@ def animate_image(
     if model.startswith("seedance") and end_image_url:
         # Pin start + end frames for maximum fidelity.
         arguments["end_image_url"] = end_image_url
-    job = fal_client.submit(model, arguments, opener=opener, tos_ack=tos_ack)
-    result = fal_client.wait(job, opener=opener)
+    if is_venice:
+        # Venice: image_url is passed directly (no fal.ai upload needed
+        # if we use a public URL, but upload_image gives us a hosted URL
+        # that works fine). Submit via Venice queue API.
+        vjob = venice_client.submit(model, arguments, opener=opener)
+        video_url = venice_client.wait(vjob, opener=opener)
+        # Build a fal-compatible result shape for the manifest below.
+        result = {"video": {"url": video_url}}
+        job_request_id = vjob.request_id
+    else:
+        job = fal_client.submit(model, arguments, opener=opener, tos_ack=tos_ack)
+        result = fal_client.wait(job, opener=opener)
+        job_request_id = job.request_id
 
     # 6. Download immediately (provider URLs expire).
-    video_url = _extract_video_url(result)
+    if is_venice:
+        video_url = result["video"]["url"]
+    else:
+        video_url = _extract_video_url(result)
     jobs_root = jobs_root or default_jobs_root()
     take_dir = os.path.join(jobs_root, effect_id, "takes")
     os.makedirs(take_dir, exist_ok=True)
@@ -359,7 +394,7 @@ def animate_image(
         "authorization": auth,
         "image_url": image_url,
         "prompt": shot.to_dict(),
-        "request_id": job.request_id,
+        "request_id": job_request_id,
         "output_path": dest,
         "video_url": video_url,
     }
