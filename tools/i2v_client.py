@@ -70,9 +70,15 @@ except ImportError:  # tools/ used as plain scripts dir
 # are intentionally NOT offered here; use tools/fal_client.py directly.
 I2V_MODELS = ("wan-25", "seedance-mini")
 
-# fal.ai file storage upload (one-step multipart). fal.run is on the egress
-# allowlist in tools/net.py. Returns JSON carrying the hosted file URL.
-FAL_UPLOAD_URL = "https://fal.run/storage/upload"
+# fal.ai file storage upload (two-step: initiate -> PUT bytes).
+# As of 2026 the old one-step https://fal.run/storage/upload multipart endpoint
+# returns 404. The current flow (used by the official fal clients) is:
+#   1. POST https://rest.fal.ai/storage/upload/initiate
+#        {"file_name": ..., "content_type": ...}  -> {upload_url, file_url}
+#   2. PUT raw bytes to upload_url (no Authorization header; signed URL)
+#   3. file_url becomes the hosted URL usable as image_url / video_url.
+# rest.fal.ai must be on the egress allowlist in tools/net.py.
+FAL_UPLOAD_INITIATE_URL = "https://rest.fal.ai/storage/upload/initiate"
 
 # Per-model I2V argument defaults. duration is a STRING on fal.ai
 # ("4".."15" or "auto").
@@ -138,24 +144,36 @@ def _upload_media(path: str, kind: str,
         article = "an" if kind == "image" else "a"
         raise I2VError(f"not {article} {kind} (content-type {ctype}): {path}")
 
-    body, boundary = _multipart_encode(
-        "file", os.path.basename(path), data, ctype)
-    req = urllib.request.Request(FAL_UPLOAD_URL, data=body, method="POST")
-    req.add_header("Authorization", f"Key {api_key}")
-    req.add_header("Content-Type",
-                   f"multipart/form-data; boundary={boundary}")
-    req.add_header("Content-Length", str(len(body)))
+    # Two-step fal.ai storage upload (2026 flow):
+    # 1. POST /storage/upload/initiate -> {upload_url, file_url}
+    # 2. PUT raw bytes to upload_url (signed URL, no auth header)
+    init_body = json.dumps({
+        "file_name": os.path.basename(path),
+        "content_type": ctype,
+    }).encode("utf-8")
+    init_req = urllib.request.Request(
+        FAL_UPLOAD_INITIATE_URL, data=init_body, method="POST")
+    init_req.add_header("Authorization", f"Key {api_key}")
+    init_req.add_header("Content-Type", "application/json")
+    init_req.add_header("Content-Length", str(len(init_body)))
     try:
-        with net.gated_urlopen(req, timeout=120, opener=opener) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+        with net.gated_urlopen(init_req, timeout=60, opener=opener) as resp:
+            init_payload = json.loads(resp.read().decode("utf-8"))
     except Exception as e:
         raise I2VError(f"media upload failed: {e}")
-    # Response shape varies; hunt for the URL.
-    url = (payload.get("url") or payload.get("file_url")
-           or payload.get("access_url") or "")
-    if not url:
-        raise I2VError(f"upload returned no URL: {payload}")
-    return url
+    upload_url = init_payload.get("upload_url", "")
+    file_url = init_payload.get("file_url", "")
+    if not upload_url or not file_url:
+        raise I2VError(f"upload initiate returned no URLs: {init_payload}")
+    put_req = urllib.request.Request(upload_url, data=data, method="PUT")
+    put_req.add_header("Content-Type", ctype)
+    put_req.add_header("Content-Length", str(len(data)))
+    try:
+        with net.gated_urlopen(put_req, timeout=120, opener=opener) as resp:
+            resp.read()
+    except Exception as e:
+        raise I2VError(f"media upload failed: {e}")
+    return file_url
 
 
 def upload_image(image_path: str,
