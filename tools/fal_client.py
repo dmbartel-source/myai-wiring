@@ -47,17 +47,17 @@ FAL_QUEUE_BASE = "https://queue.fal.run"
 MODEL_REGISTRY = {
     # Draft tier (approved)
     "wan-25": {
-        "endpoint": "fal-ai/wan-25/text-to-video",
-        "usd_per_sec": 0.05,
+        "endpoint": "fal-ai/wan-25-preview/image-to-video",
+        "usd_per_sec": 0.10,
         "tier": "draft",
         "supports": ["t2v", "i2v"],
         "tos": "approved",
         "tos_note": "fal.ai platform: approved with caveats (Oct 2026 review).",
     },
     "seedance-mini": {
-        "endpoint": "fal-ai/seedance/v2-0-mini",
-        "usd_per_sec": 0.0113,
-        "tier": "draft",
+        "endpoint": "bytedance/seedance-2.0/image-to-video",
+        "usd_per_sec": 0.30,
+        "tier": "final",
         "supports": ["t2v", "i2v"],
         "tos": "approved",
         "tos_note": "fal.ai platform: approved with caveats (Oct 2026 review).",
