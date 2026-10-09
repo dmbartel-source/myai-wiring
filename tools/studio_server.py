@@ -146,6 +146,26 @@ GENERATE_OPTIONS = [
      "multi_ref": True,
      "needs_prompt": True,
      "paid": True},
+    {"id": "i2v_venice",
+     "name": "Animate Photo (Venice AI)",
+     "badge": "$",
+     "cost": "~$0.65/clip (5s)",
+     "description": ("AI motion via Venice (Wan 3.0). No platform content filter; "
+                     "privacy-friendly. Select 1 photo to animate."),
+     "needs_media": "image",
+     "multi_ref": False,
+     "needs_prompt": True,
+     "paid": True},
+    {"id": "i2v_venice_uncensored",
+     "name": "Animate Photo (Venice Uncensored)",
+     "badge": "$",
+     "cost": "~$0.64/clip (5s)",
+     "description": ("AI motion via Venice enhanced uncensored model (Wan 2.7). "
+                     "Maximum creative freedom. Select 1 photo to animate."),
+     "needs_media": "image",
+     "multi_ref": False,
+     "needs_prompt": True,
+     "paid": True},
     {"id": "kenburns_free",
      "name": "Animate Photo (Ken Burns)",
      "badge": "FREE",
@@ -704,12 +724,40 @@ class StudioHandler(BaseHTTPRequestHandler):
                              "message": info["message"]})
             return
         # Only image-to-video is wired up. Text-to-video needs a backend.
-        if gen_id != "i2v":
+        if gen_id not in ("i2v", "i2v_venice", "i2v_venice_uncensored"):
             self._send_json({
                 "status": "not_available",
                 "message": ("Text-to-video isn't wired up yet — "
                             "image-to-video is ready now."),
             })
+            return
+        # Venice routes: single image only, no multi-reference.
+        if gen_id in ("i2v_venice", "i2v_venice_uncensored"):
+            venice_model = ("venice-wan3" if gen_id == "i2v_venice"
+                            else "venice-wan27-uncensored")
+            # Check Venice key is configured.
+            try:
+                from i2v_client import venice_client
+            except ImportError:
+                import sys
+                sys.path.insert(0, os.path.dirname(__file__))
+                from i2v_client import venice_client
+            try:
+                venice_client.get_api_key()
+            except Exception as e:
+                self._send_json({"status": "needs_setup",
+                                 "message": str(e)})
+                return
+            mpath = safe_media_path(media)
+            job_id = JOBS.new(media, "paid_generate", gen_id, {
+                "prompt": prompt,
+                "model": venice_model,
+                "duration_s": 5.0,
+            })
+            POOL.submit(_run_job, job_id)
+            est = venice_client.estimate_cost(venice_model, 5.0)
+            self._send_json({"job_id": job_id, "status": "started",
+                             "estimate": f"~${est:.2f}/clip"})
             return
         # Reference media: 2-9 images and/or up to 3 short videos for
         # Seedance 2.0 reference-to-video (better character consistency).
