@@ -138,7 +138,7 @@ GENERATE_OPTIONS = [
     {"id": "i2v",
      "name": "Animate Photo (AI)",
      "badge": "$",
-     "cost": "~$0.06/clip single; ~$1.50/clip w/ refs",
+     "cost": "~$1.50/clip (5s)",
      "description": ("Real AI motion from your photo (fal.ai). Select 1 photo "
                      "to animate, or 2-9 photos (and up to 3 short clips) "
                      "for better character consistency."),
