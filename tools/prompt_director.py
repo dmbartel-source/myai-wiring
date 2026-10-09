@@ -309,3 +309,84 @@ def build_wan_prompt(subject: str, environment: str, lighting: str,
                "preserve identity; disable fal's prompt expansion for "
                "precise prompts."),
     )
+
+
+# ------------------------------------------------------- reference prompts ----
+
+# Character-consistency locks for reference-to-video. The refs hold
+# identity; these stop the model drifting it. Visual-consistency guards,
+# not content restrictions.
+REFERENCE_FIDELITY_LOCKS = (
+    "Keep the character identical to the reference images in every frame: "
+    "same face, same hair and hairstyle, same outfit, same body type. "
+    "No face reshaping, no outfit change, no age change, no new characters.")
+
+
+def build_reference_prompt(image_roles: Optional[list[str]] = None,
+                           video_roles: Optional[list[str]] = None,
+                           n_images: int = 0, n_videos: int = 0,
+                           motion: str = "",
+                           camera: str = "static",
+                           audio: Optional[str] = None,
+                           fidelity_locks: bool = True,
+                           lock_block: Optional[str] = None,
+                           duration_s: float = 5.0, aspect: str = "16:9",
+                           negative_categories: Optional[list[str]] = None,
+                           house_seed: bool = False,
+                           **kwargs) -> ShotPrompt:
+    """Seedance 2.0 reference-to-video prompt.
+
+    Refs are cited in the prompt as @Image1..@ImageN / @Video1..@VideoM,
+    each annotated with its role (e.g. "character front view",
+    "outfit detail", "walk cycle sample") so the model knows what each
+    reference contributes. image_roles / video_roles align positionally;
+    if a count (n_images / n_videos) exceeds the roles given, the extras
+    get generic role labels.
+
+    No content filtering: prompts pass through exactly as specified.
+    Fidelity locks are visual-consistency guards, not content restrictions.
+    """
+    img_roles = list(image_roles or [])
+    vid_roles = list(video_roles or [])
+    total_images = max(n_images, len(img_roles))
+    total_videos = max(n_videos, len(vid_roles))
+    if total_images + total_videos == 0:
+        raise ValueError("build_reference_prompt needs at least one "
+                         "image or video reference")
+
+    refs: list[str] = []
+    for i in range(total_images):
+        role = img_roles[i] if i < len(img_roles) else f"reference {i + 1}"
+        refs.append(f"@Image{i + 1} ({role.strip().rstrip('.')})")
+    for i in range(total_videos):
+        role = vid_roles[i] if i < len(vid_roles) else f"motion sample {i + 1}"
+        refs.append(f"@Video{i + 1} ({role.strip().rstrip('.')})")
+
+    cam_key = camera if camera in CAMERA_MOVES else "static"
+    cam_phrase = CAMERA_MOVES[cam_key]
+    mot = motion.strip().rstrip(".")
+
+    sentences = [f"Using {', '.join(refs)} as reference, animate: {mot}."]
+    sentences.append(f"Camera: {cam_phrase}.")
+    if audio:
+        sentences.append(f"Audio: {audio.strip().rstrip('.')}.")
+    if fidelity_locks:
+        sentences.append(REFERENCE_FIDELITY_LOCKS)
+    if lock_block:
+        sentences.append(lock_block.strip())
+    positive = " ".join(sentences)
+
+    cats = list(negative_categories or [])
+    if "human" not in cats:
+        cats.append("human")
+
+    return ShotPrompt(
+        positive=positive,
+        negative=build_negative(categories=cats),
+        camera_move=cam_key,
+        seed=make_seed(stable=house_seed, salt=positive),
+        duration_s=duration_s,
+        aspect=aspect,
+        notes=("Reference-to-video: refs cited as @ImageN/@VideoN with "
+               "role labels; character-consistency fidelity locks applied."),
+    )
