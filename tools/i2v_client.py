@@ -311,7 +311,7 @@ def animate_image(
         vspec = venice_client.VENICE_MODELS[model]
         # Venice has no platform content filter; ToS gate is a pass-through.
         # David's pre-vetting (consenting adult / AI-generated) is the gate.
-        spec = {"tos": "approved", "tier": "paid", "supports": ["i2v"]}
+        spec = {"tos": "approved", "tier": "final", "supports": ["i2v"]}
     else:
         # 1. ToS gate + model support check.
         spec = fal_client.require_route(model, tos_ack=tos_ack)
