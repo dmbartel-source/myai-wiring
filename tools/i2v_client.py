@@ -78,7 +78,9 @@ I2V_MODELS = ("wan-25", "seedance-mini")
 #   2. PUT raw bytes to upload_url (no Authorization header; signed URL)
 #   3. file_url becomes the hosted URL usable as image_url / video_url.
 # rest.fal.ai must be on the egress allowlist in tools/net.py.
-FAL_UPLOAD_INITIATE_URL = "https://rest.fal.ai/storage/upload/initiate"
+FAL_UPLOAD_INITIATE_URL = (
+    "https://rest.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3"
+)
 
 # Per-model I2V argument defaults. duration is a STRING on fal.ai
 # ("4".."15" or "auto").
