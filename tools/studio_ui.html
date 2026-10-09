@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>MYAI Studio</title>
+<style>
+:root{
+  --bg:#0d1117; --card:#161b22; --card2:#1c2330; --line:#2d333b;
+  --txt:#e6edf3; --dim:#8b949e; --acc:#2f81f7; --acc2:#1f6feb;
+  --free:#3fb950; --paid:#d29922; --err:#f85149;
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+body{margin:0; background:var(--bg); color:var(--txt);
+  font-family:-apple-system,system-ui,Roboto,"Segoe UI",sans-serif;
+  font-size:16px; line-height:1.4;}
+header{background:#010409; padding:14px 16px; position:sticky; top:0; z-index:10;
+  border-bottom:1px solid var(--line);}
+header h1{margin:0; font-size:20px; letter-spacing:.5px;}
+header h1 span{color:var(--acc);}
+nav{display:flex; background:#010409; border-bottom:1px solid var(--line);
+  position:sticky; top:57px; z-index:10;}
+nav button{flex:1; background:none; border:none; color:var(--dim);
+  padding:14px 4px; font-size:15px; font-weight:600; cursor:pointer;
+  border-bottom:3px solid transparent; min-height:52px;}
+nav button.active{color:var(--txt); border-bottom-color:var(--acc);}
+main{padding:14px 14px 90px; max-width:720px; margin:0 auto;}
+.screen{display:none;}
+.screen.active{display:block;}
+.bigbtn{display:block; width:100%; padding:22px; margin:12px 0;
+  font-size:19px; font-weight:700; color:#fff; background:var(--acc2);
+  border:none; border-radius:14px; cursor:pointer; min-height:72px;}
+.bigbtn:active{transform:scale(.98);}
+.bigbtn.ghost{background:var(--card2); border:1px solid var(--line);}
+.card{background:var(--card); border:1px solid var(--line); border-radius:12px;
+  padding:14px; margin:10px 0; cursor:pointer; min-height:64px;
+  display:flex; align-items:center; gap:12px;}
+.card:active{background:var(--card2);}
+.card .info{flex:1;}
+.card .name{font-weight:700; font-size:16px;}
+.card .desc{color:var(--dim); font-size:13px; margin-top:2px;}
+.card .cost{font-size:13px; color:var(--dim); margin-top:4px;}
+.badge{display:inline-block; font-size:11px; font-weight:800; padding:3px 8px;
+  border-radius:20px; letter-spacing:.5px; flex-shrink:0;}
+.badge.free{background:rgba(63,185,80,.18); color:var(--free);
+  border:1px solid var(--free);}
+.badge.paid{background:rgba(210,153,34,.15); color:var(--paid);
+  border:1px solid var(--paid);}
+.grid{display:grid; grid-template-columns:repeat(3,1fr); gap:10px;}
+.thumb{position:relative; aspect-ratio:1; border-radius:10px; overflow:hidden;
+  background:var(--card2); border:2px solid transparent; cursor:pointer;}
+.thumb img{width:100%; height:100%; object-fit:cover; display:block;}
+.thumb.sel{border-color:var(--acc);}
+.thumb .vtag{position:absolute; bottom:4px; right:4px; background:rgba(0,0,0,.7);
+  font-size:11px; padding:2px 6px; border-radius:6px;}
+h2.sec{font-size:15px; text-transform:uppercase; letter-spacing:1px;
+  color:var(--dim); margin:20px 0 6px;}
+.selbar{display:flex; gap:10px; align-items:center; background:var(--card);
+  border:1px solid var(--line); border-radius:12px; padding:8px; margin-bottom:8px;}
+.selbar img{width:56px; height:56px; object-fit:cover; border-radius:8px;}
+.prog{height:8px; background:var(--card2); border-radius:4px; margin:8px 0;
+  overflow:hidden;}
+.prog > div{height:100%; background:var(--acc); width:0%; transition:width .3s;}
+.upitem{background:var(--card); border-radius:10px; padding:10px 12px;
+  margin:8px 0; font-size:14px;}
+.spinner{width:56px; height:56px; border:5px solid var(--line);
+  border-top-color:var(--acc); border-radius:50%; margin:30px auto;
+  animation:spin 1s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.result-media{width:100%; border-radius:12px; margin:12px 0; max-height:60vh;
+  object-fit:contain; background:#000;}
+.err{background:rgba(248,81,73,.12); border:1px solid var(--err);
+  color:var(--err); padding:12px; border-radius:10px; margin:10px 0;}
+.note{background:var(--card); border:1px solid var(--line); padding:12px;
+  border-radius:10px; color:var(--dim); font-size:14px; margin:10px 0;}
+textarea, input[type=text]{width:100%; background:var(--card2); color:var(--txt);
+  border:1px solid var(--line); border-radius:10px; padding:14px; font-size:16px;
+  margin:8px 0;}
+.confirm{background:var(--card); border:2px solid var(--paid); border-radius:14px;
+  padding:18px; margin:12px 0;}
+.confirm .price{font-size:24px; font-weight:800; color:var(--paid); margin:8px 0;}
+.row{display:flex; gap:10px;}
+.row .bigbtn{margin:6px 0;}
+.hidden{display:none !important;}
+footer.hint{text-align:center; color:var(--dim); font-size:13px; padding:20px;}
+</style>
+</head>
+<body>
+<header><h1>MYAI <span>Studio</span></h1></header>
+<nav>
+  <button data-screen="upload" class="active">Upload</button>
+  <button data-screen="gallery">Gallery</button>
+  <button data-screen="effects">Effects</button>
+  <button data-screen="generate">Generate</button>
+</nav>
+<main>
+  <!-- UPLOAD -->
+  <section id="screen-upload" class="screen active">
+    <button class="bigbtn" id="btn-pick">📷 Upload Photos / Videos</button>
+    <input type="file" id="file-input" accept="image/*,video/*" multiple class="hidden">
+    <div class="note">Files stay on your private server. Nothing is sent anywhere.</div>
+    <div id="upload-list"></div>
+  </section>
+
+  <!-- GALLERY -->
+  <section id="screen-gallery" class="screen">
+    <div id="gallery-grid" class="grid"></div>
+    <div id="gallery-empty" class="note">No media yet — upload something first.</div>
+    <footer class="hint">Tap a photo or video to select it, then pick an effect.</footer>
+  </section>
+
+  <!-- EFFECTS -->
+  <section id="screen-effects" class="screen">
+    <div id="fx-sel"></div>
+    <div id="fx-list"></div>
+  </section>
+
+  <!-- GENERATE -->
+  <section id="screen-generate" class="screen">
+    <div id="gen-status"></div>
+    <div id="gen-pick-media" class="hidden">
+      <div class="note">This needs a photo — pick one:</div>
+      <div id="gen-grid" class="grid"></div>
+    </div>
+    <div id="gen-prompt-wrap" class="hidden">
+      <textarea id="gen-prompt" rows="3" placeholder="Describe the video..."></textarea>
+    </div>
+    <div id="gen-list"></div>
+    <div id="gen-confirm" class="confirm hidden">
+      <div class="name" id="gen-confirm-name" style="font-weight:700"></div>
+      <div id="gen-confirm-refs"></div>
+      <div class="price" id="gen-confirm-cost"></div>
+      <div class="desc" id="gen-confirm-desc" style="color:var(--dim);font-size:14px"></div>
+      <div class="row">
+        <button class="bigbtn" id="gen-confirm-yes">Confirm</button>
+        <button class="bigbtn ghost" id="gen-confirm-no">Cancel</button>
+      </div>
+    </div>
+    <div id="gen-result"></div>
+  </section>
+
+  <!-- RESULT -->
+  <section id="screen-result" class="screen">
+    <div id="result-body"></div>
+    <button class="bigbtn ghost" id="btn-again">↩ Try another effect</button>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+let selected = null;          // {name, type, thumb}
+let catalog = null;
+let genOpts = null;
+let pollTimer = null;
+let pendingGen = null;        // {opt, media}
+
+function show(name){
+  document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
+  $("#screen-"+name).classList.add("active");
+  document.querySelectorAll("nav button").forEach(b=>
+    b.classList.toggle("active", b.dataset.screen===name));
+  window.scrollTo(0,0);
+}
+document.querySelectorAll("nav button").forEach(b=>
+  b.addEventListener("click", ()=>{ show(b.dataset.screen); if(b.dataset.screen==="gallery") loadGallery(); }));
+
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  const ct = r.headers.get("content-type")||"";
+  const data = ct.includes("json") ? await r.json() : await r.text();
+  if(!r.ok) throw new Error((data&&data.error)||("HTTP "+r.status));
+  return data;
+}
+
+/* ---------- upload ---------- */
+$("#btn-pick").addEventListener("click", ()=> $("#file-input").click());
+$("#file-input").addEventListener("change", async e=>{
+  const files = [...e.target.files];
+  e.target.value = "";
+  for(const f of files) await uploadOne(f);
+  loadGallery();
+});
+async function uploadOne(f){
+  const box = document.createElement("div");
+  box.className = "upitem";
+  box.innerHTML = `<div>${esc(f.name)}</div><div class="prog"><div></div></div>`;
+  $("#upload-list").prepend(box);
+  const bar = box.querySelector(".prog > div");
+  const fd = new FormData(); fd.append("files", f);
+  await new Promise((res, rej)=>{
+    const x = new XMLHttpRequest();
+    x.open("POST", "/api/upload");
+    x.upload.onprogress = ev=>{ if(ev.lengthComputable) bar.style.width = (100*ev.loaded/ev.total)+"%"; };
+    x.onload = ()=> x.status===200 ? res() : rej(new Error("upload failed"));
+    x.onerror = ()=> rej(new Error("upload failed"));
+    x.send(fd);
+  }).catch(err=>{ box.innerHTML = `<div class="err">${esc(err.message)}</div>`; });
+  bar.style.width = "100%";
+}
+function esc(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+/* ---------- gallery ---------- */
+async function loadGallery(){
+  const grid = $("#gallery-grid");
+  try{
+    const data = await api("/api/media");
+    const items = data.media||[];
+    $("#gallery-empty").style.display = items.length ? "none" : "block";
+    grid.innerHTML = "";
+    for(const m of items){
+      const d = document.createElement("div");
+      d.className = "thumb" + (selected && selected.name===m.name ? " sel" : "");
+      d.innerHTML = `<img loading="lazy" src="${m.thumb}" alt="">${m.type==="video"?'<span class="vtag">▶</span>':""}`;
+      d.addEventListener("click", ()=>{ selected = m; loadGallery(); show("effects"); renderEffects(); });
+      grid.appendChild(d);
+    }
+  }catch(e){ grid.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+
+/* ---------- effects ---------- */
+async function ensureCatalog(){
+  if(!catalog) catalog = await api("/api/effects");
+}
+const KIND_LABEL = {style_pack:"🎬 Style Packs", photo_op:"📷 Photo", video_effect:"🎞 Video", kenburns:"✨ Animate"};
+async function renderEffects(){
+  const sel = $("#fx-sel"), list = $("#fx-list");
+  if(!selected){ sel.innerHTML = `<div class="note">Pick something from the Gallery first.</div>`; list.innerHTML=""; return; }
+  sel.innerHTML = `<div class="selbar"><img src="${selected.thumb}"><div><b>${esc(selected.name)}</b><br><span style="color:var(--dim);font-size:13px">${selected.type}</span></div></div>`;
+  await ensureCatalog();
+  list.innerHTML = "";
+  for(const kind of ["style_pack","photo_op","video_effect","kenburns"]){
+    const cards = (catalog[kind]||[]).filter(c=>c.applies_to===selected.type);
+    if(!cards.length) continue;
+    const h = document.createElement("h2"); h.className="sec"; h.textContent = KIND_LABEL[kind];
+    list.appendChild(h);
+    for(const c of cards){
+      const d = document.createElement("div");
+      d.className = "card";
+      d.innerHTML = `<span class="badge free">FREE</span><div class="info"><div class="name">${esc(c.name.replace(/_/g," "))}</div><div class="desc">${esc(c.description)}</div></div>`;
+      d.addEventListener("click", ()=> startJob(kind, c.name, {}));
+      list.appendChild(d);
+    }
+  }
+}
+async function startJob(kind, name, params){
+  show("result");
+  $("#result-body").innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">Rendering <b>${esc(name)}</b>…</p>`;
+  try{
+    const r = await api("/api/apply", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({media:selected.name, kind, name, params})});
+    pollJob(r.job_id);
+  }catch(e){
+    $("#result-body").innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+function pollJob(jobId){
+  clearInterval(pollTimer);
+  const tick = async ()=>{
+    try{
+      const j = await api("/api/job/"+jobId);
+      if(j.status==="done"){
+        clearInterval(pollTimer);
+        const isVid = j.result_name && /\.(mp4|mov|webm)$/i.test(j.result_name);
+        $("#result-body").innerHTML =
+          (isVid ? `<video class="result-media" controls src="${j.result_url}"></video>`
+                 : `<img class="result-media" src="${j.result_url}">`) +
+          `<a class="bigbtn" style="text-align:center;text-decoration:none;display:block" href="${j.result_url}" download>⬇ Download</a>`;
+      }else if(j.status==="error"){
+        clearInterval(pollTimer);
+        $("#result-body").innerHTML = `<div class="err">${esc(j.error||"render failed")}</div>`;
+      }
+    }catch(e){ clearInterval(pollTimer);
+      $("#result-body").innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+  pollTimer = setInterval(tick, 2000);
+  tick();
+}
+$("#btn-again").addEventListener("click", ()=> show("effects"));
+
+/* ---------- generate ---------- */
+async function ensureGen(){
+  if(!genOpts) genOpts = await api("/api/generate_options");
+}
+async function renderGenerate(){
+  await ensureGen();
+  const st = $("#gen-status");
+  st.innerHTML = genOpts.configured
+    ? `<div class="note">✅ Paid generation ready.</div>`
+    : `<div class="note">⚠️ <b>Paid options need setup:</b> ${esc(genOpts.setup_message)}</div>`;
+  const list = $("#gen-list");
+  list.innerHTML = "";
+  $("#gen-result").innerHTML = "";
+  for(const o of genOpts.options){
+    const d = document.createElement("div");
+    d.className = "card";
+    const badge = o.paid ? `<span class="badge paid">$</span>` : `<span class="badge free">FREE</span>`;
+    d.innerHTML = `${badge}<div class="info"><div class="name">${esc(o.name)}</div><div class="desc">${esc(o.description)}</div><div class="cost">Est. cost: <b>${esc(o.cost)}</b></div></div>`;
+    d.addEventListener("click", ()=> onGenTap(o));
+    list.appendChild(d);
+  }
+}
+function onGenTap(o){
+  $("#gen-result").innerHTML = "";
+  if(o.id==="kenburns_free"){
+    // free path: needs an image -> reuse the apply flow
+    if(!selected || selected.type!=="image"){
+      pickGenMedia("image", (m)=>{ selected = m; startJob("kenburns","zoom_in",{}); });
+    }else startJob("kenburns","zoom_in",{});
+    return;
+  }
+  // paid path
+  if(o.id==="i2v"){
+    // AI animate: 1 photo, or 2-9 photos + up to 3 clips for consistency
+    pickGenMediaMulti((list)=>{ confirmGen(o, list); });
+    return;
+  }
+  if(o.needs_media){
+    const need = o.needs_media;
+    if(!selected || selected.type!==need){
+      pickGenMedia(need, (m)=>{ selected = m; confirmGen(o); });
+      return;
+    }
+  }
+  confirmGen(o);
+}
+function clearGenPickerControls(){
+  const w = $("#gen-pick-media");
+  ["#gen-pick-done","#gen-pick-cancel"].forEach(id=>{
+    const b = w.querySelector(id); if(b) b.remove();
+  });
+}
+function pickGenMedia(type, cb){
+  const w = $("#gen-pick-media"), g = $("#gen-grid");
+  clearGenPickerControls();
+  w.classList.remove("hidden");
+  g.innerHTML = "";
+  w.querySelector(".note").textContent = "This needs a photo — pick one:";
+  api("/api/media").then(data=>{
+    const items = (data.media||[]).filter(m=>m.type===type);
+    if(!items.length){ g.innerHTML = `<div class="note">No ${type}s yet — upload one first.</div>`; return; }
+    for(const m of items){
+      const d = document.createElement("div");
+      d.className = "thumb";
+      d.innerHTML = `<img loading="lazy" src="${m.thumb}">`;
+      d.addEventListener("click", ()=>{ w.classList.add("hidden"); cb(m); });
+      g.appendChild(d);
+    }
+  });
+  show("generate");
+}
+// Multi-reference picker for reference-to-video: 1 photo, or 2-9 photos
+// and up to 3 short clips for better character consistency.
+function pickGenMediaMulti(cb){
+  const w = $("#gen-pick-media"), g = $("#gen-grid");
+  clearGenPickerControls();
+  w.classList.remove("hidden");
+  g.innerHTML = "";
+  w.querySelector(".note").textContent = "Select 1 photo to animate, or 2\u20139 photos (and up to 3 short clips) for better character consistency:";
+  api("/api/media").then(data=>{
+    const items = (data.media||[]).filter(m=>m.type==="image"||m.type==="video");
+    if(!items.length){ g.innerHTML = `<div class="note">No photos or clips yet — upload some first.</div>`; return; }
+    const chosen = [];
+    const doneBtn = document.createElement("button");
+    doneBtn.className = "bigbtn"; doneBtn.id = "gen-pick-done";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "bigbtn ghost"; cancelBtn.id = "gen-pick-cancel";
+    cancelBtn.textContent = "Cancel";
+    const refresh = ()=>{
+      doneBtn.textContent = chosen.length
+        ? `Use ${chosen.length} reference${chosen.length>1?"s":""}`
+        : "Done";
+    };
+    for(const m of items){
+      const d = document.createElement("div");
+      d.className = "thumb";
+      d.innerHTML = `<img loading="lazy" src="${m.thumb}">` +
+        (m.type==="video" ? `<span class="vtag">\u25b6</span>` : "");
+      d.addEventListener("click", ()=>{
+        const i = chosen.findIndex(c=>c.name===m.name);
+        if(i>=0){ chosen.splice(i,1); d.classList.remove("sel"); }
+        else{
+          const imgs = chosen.filter(c=>c.type==="image").length;
+          const vids = chosen.filter(c=>c.type==="video").length;
+          if(m.type==="image" && imgs>=9){ alert("Max 9 reference photos."); return; }
+          if(m.type==="video" && vids>=3){ alert("Max 3 reference clips."); return; }
+          chosen.push(m); d.classList.add("sel");
+        }
+        refresh();
+      });
+      g.appendChild(d);
+    }
+    cancelBtn.addEventListener("click", ()=>{
+      w.classList.add("hidden"); clearGenPickerControls();
+    });
+    doneBtn.addEventListener("click", ()=>{
+      if(!chosen.length){ alert("Pick at least one photo or clip."); return; }
+      w.classList.add("hidden"); clearGenPickerControls(); cb(chosen);
+    });
+    w.appendChild(doneBtn); w.appendChild(cancelBtn);
+    refresh();
+  });
+  show("generate");
+}
+function confirmGen(o, refs){
+  pendingGen = {opt:o, refs: refs||null};
+  $("#gen-prompt-wrap").classList.toggle("hidden", !o.needs_prompt);
+  $("#gen-confirm-name").textContent = o.name;
+  let cost = o.cost;
+  if(o.id==="i2v" && refs && refs.length>1){
+    const hasVid = refs.some(m=>m.type==="video");
+    cost = hasVid ? "~$0.90/clip (refs + clip discount)" : "~$1.50/clip (reference-to-video)";
+  }
+  $("#gen-confirm-cost").textContent = "Estimated cost: " + cost;
+  $("#gen-confirm-desc").textContent = o.description + (genOpts.configured ? "" : " — NOTE: fal.ai is not set up yet.");
+  $("#gen-confirm-refs").innerHTML = (refs && refs.length)
+    ? `<div class="grid" style="margin:8px 0">` +
+      refs.map(m=>`<div class="thumb sel"><img loading="lazy" src="${m.thumb}">` +
+        (m.type==="video" ? `<span class="vtag">\u25b6</span>` : "") + `</div>`).join("") +
+      `</div>` : "";
+  $("#gen-confirm").classList.remove("hidden");
+  $("#gen-confirm").scrollIntoView({behavior:"smooth"});
+  show("generate");
+}
+$("#gen-confirm-no").addEventListener("click", ()=>{
+  $("#gen-confirm").classList.add("hidden"); pendingGen = null;
+});
+$("#gen-confirm-yes").addEventListener("click", async ()=>{
+  const o = pendingGen && pendingGen.opt;
+  const refs = pendingGen && pendingGen.refs;
+  $("#gen-confirm").classList.add("hidden"); pendingGen = null;
+  if(!o) return;
+  const prompt = $("#gen-prompt").value.trim();
+  const box = $("#gen-result");
+  box.innerHTML = `<div class="spinner"></div>`;
+  const payload = {id:o.id, prompt, media: selected?selected.name:""};
+  if(refs && refs.length){
+    payload.reference_images = refs.filter(m=>m.type==="image").map(m=>m.name);
+    payload.reference_videos = refs.filter(m=>m.type==="video").map(m=>m.name);
+    payload.media = refs[0].name;
+  }
+  try{
+    const r = await api("/api/generate", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(payload)});
+    if(r.status==="needs_setup"){
+      box.innerHTML = `<div class="note">⚠️ <b>Needs setup.</b> ${esc(r.message)}</div>`;
+    }else if(r.status==="not_available"){
+      box.innerHTML = `<div class="note">🚧 <b>Not available.</b> ${esc(r.message)}<br><br>Estimated cost was <b>${esc(r.estimate||o.cost)}</b> — nothing was charged.</div>`;
+    }else if(r.job_id){
+      // Paid job launched — follow it to the result screen like any job.
+      show("result");
+      $("#result-body").innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">Generating <b>${esc(o.name)}</b>…<br>Estimated cost <b>${esc(r.estimate||o.cost)}</b> — charged only on completion.</p>`;
+      pollJob(r.job_id);
+    }else{
+      box.innerHTML = `<div class="note">${esc(r.message||"Done.")}</div>`;
+    }
+  }catch(e){ box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+});
+document.querySelector('nav button[data-screen="generate"]').addEventListener("click", renderGenerate);
+
+/* ---------- init ---------- */
+loadGallery();
+</script>
+</body>
+</html>
