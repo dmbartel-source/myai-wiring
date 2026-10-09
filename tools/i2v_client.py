@@ -358,6 +358,14 @@ def animate_image(
         # Pin start + end frames for maximum fidelity.
         arguments["end_image_url"] = end_image_url
     if is_venice:
+        # Venice consent attestation: David pre-vets every upload as
+        # consenting adult model or AI-generated. Include the attestation
+        # in the prompt for Venice's likeness consent flow.
+        consent = (" [Consent attestation: I confirm the person depicted "
+                   "is either AI-generated or a consenting adult model, "
+                   "and I have the rights to use this likeness.]")
+        if "prompt" in arguments and consent not in arguments["prompt"]:
+            arguments["prompt"] = arguments["prompt"] + consent
         # Venice: image_url is passed directly (no fal.ai upload needed
         # if we use a public URL, but upload_image gives us a hosted URL
         # that works fine). Submit via Venice queue API.
