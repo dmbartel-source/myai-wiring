@@ -67,9 +67,15 @@ DEFAULT_QUALITY = "standard"
 
 # Continuity tail appended to every chained beat after the first.
 CONTINUITY_TAIL = (
-    " Visual continuity: same people, same room, same lighting as the "
-    "reference image. BUT the action must advance — perform the NEW action "
-    "described above, do not repeat the previous motion. Move the story forward."
+    " STRICT CONTINUITY LOCK: This is a direct continuation of the exact same"
+    " shot. Preserve with pixel-level fidelity: the SAME person's face, facial"
+    " features, skin tone, hair style and color; the SAME clothing, colors and"
+    " textures; the SAME body type and proportions; the SAME room, background,"
+    " objects, lighting direction and color temperature; the SAME camera angle"
+    " and framing as the reference image. Do NOT redesign, beautify, or"
+    " reinterpret anything. Do NOT change the person's appearance in any way."
+    " Then perform ONLY the new action described above — move the story"
+    " forward with that action, nothing else."
 )
 
 
