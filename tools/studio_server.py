@@ -577,6 +577,26 @@ def _run_job(job_id: str) -> None:
                             phase=f"Clip {i + 1} of {total}: {phase}"
                             if i < total else phase)
 
+            def _wait_clip(vjob):
+                return vc.wait(vjob, timeout_s=1200.0, poll_interval_s=15.0)
+
+            def _download(url: str, dest: str):
+                return vc.download_to_file(url, dest)
+
+            from video_edit import extract_last_frame as _elf
+            ref_image = p.get("ref_image")
+            ref_video = p.get("ref_video")
+            # Pre-convert reference image to data URL for R2V consistency.
+            # Seedance R2V uses reference_image_urls (up to 30) to lock
+            # character features across all clips in the chain.
+            ref_image_url = None
+            if ref_image:
+                ref_path = safe_media_path(ref_image)
+                if ref_path:
+                    ref_image_url = vc.file_to_data_url(ref_path)
+            # Make ref_image_url available to _submit_clip via closure.
+            _r2v_ref_url = ref_image_url
+
             def _submit_clip(a: dict):
                 mid = a.pop("model_id", chain_model)
                 task_type = a.pop("task_type", None)
@@ -598,23 +618,19 @@ def _run_job(job_id: str) -> None:
                         duration_s=float(a.get("duration",
                                               p["clip_duration_s"])),
                         resolution=q["resolution"])
-                # I2V leg (first clip, or lastframe chaining).
-                return vc.submit(mid, {
+                # I2V / R2V leg (first clip, or lastframe chaining).
+                submit_args = {
                     "prompt": a["prompt"],
                     "duration": a.get("duration", p["clip_duration_s"]),
                     "resolution": q["resolution"],
                     "image_url": a.get("image_url"),
-                })
+                }
+                # Seedance R2V: pass original reference images every clip
+                # for character consistency, in addition to the last frame.
+                if mid == "venice-seedance-r2v" and _r2v_ref_url:
+                    submit_args["reference_image_urls"] = [_r2v_ref_url]
+                return vc.submit(mid, submit_args)
 
-            def _wait_clip(vjob):
-                return vc.wait(vjob, timeout_s=1200.0, poll_interval_s=15.0)
-
-            def _download(url: str, dest: str):
-                return vc.download_to_file(url, dest)
-
-            from video_edit import extract_last_frame as _elf
-            ref_image = p.get("ref_image")
-            ref_video = p.get("ref_video")
             final = lv.run_chain(
                 beats=beats,
                 clip_duration_s=float(p["clip_duration_s"]),
@@ -1251,7 +1267,8 @@ class StudioHandler(BaseHTTPRequestHandler):
         # Uncensored first — David's standing preference.
         models.sort(key=lambda m: (not m["uncensored"], m["name"]))
         chain_i2v = []
-        for mid in ("venice-wan27-uncensored", "venice-wan3"):
+        for mid in ("venice-wan27-uncensored", "venice-wan3",
+                    "venice-seedance-r2v"):
             s = vc.VENICE_MODELS.get(mid)
             if s:
                 chain_i2v.append({
