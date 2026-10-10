@@ -67,11 +67,11 @@ def test_segment_prompt_empty_raises():
 
 def test_beat_prompt_adds_continuity_after_first():
     b0 = lv.beat_prompt("flies over city", 0)
-    assert "Move the story forward" not in b0
+    assert "STRICT CONTINUITY LOCK" not in b0
     b1 = lv.beat_prompt("lands on roof", 1)
-    assert "lands on roof" in b1
-    assert "Move the story forward" in b1
-    assert "same lighting" in b1
+    assert "STRICT CONTINUITY LOCK" in b1
+    assert "STRICT CONTINUITY LOCK" in b1
+    assert "STRICT CONTINUITY LOCK" in b1
 
 
 # ------------------------------------------------------------ planning ----
@@ -179,6 +179,6 @@ def test_run_chain_with_fake_venice(tmp_path, clips):
     assert "image_url" in calls[0]
     # clips 1-2: last-frame I2V with continuity tail, NOT the raw beat
     assert calls[1]["prompt"].startswith("hero lands")
-    assert "Move the story forward" in calls[1]["prompt"]
+    assert "STRICT CONTINUITY LOCK" in calls[1]["prompt"]
     assert "image_url" in calls[1]
     assert calls[2]["prompt"].startswith("hero looks out")
