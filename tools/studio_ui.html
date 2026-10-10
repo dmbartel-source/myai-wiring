@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>MYAI Studio</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0d1117">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="MYAI Studio">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <style>
 :root{
   --bg:#0d1117; --card:#161b22; --card2:#1c2330; --line:#2d333b;
@@ -18,13 +26,57 @@ header{background:#010409; padding:14px 16px; position:sticky; top:0; z-index:10
   border-bottom:1px solid var(--line);}
 header h1{margin:0; font-size:20px; letter-spacing:.5px;}
 header h1 span{color:var(--acc);}
-nav{display:flex; background:#010409; border-bottom:1px solid var(--line);
-  position:sticky; top:57px; z-index:10;}
+nav{display:flex; background:#010409; border-top:1px solid var(--line);
+  position:fixed; bottom:0; left:0; right:0; z-index:50;
+  padding-bottom:env(safe-area-inset-bottom);}
 nav button{flex:1; background:none; border:none; color:var(--dim);
-  padding:14px 4px; font-size:15px; font-weight:600; cursor:pointer;
-  border-bottom:3px solid transparent; min-height:52px;}
-nav button.active{color:var(--txt); border-bottom-color:var(--acc);}
+  padding:10px 4px 8px; font-size:11px; font-weight:600; cursor:pointer;
+  border-top:3px solid transparent; min-height:60px;
+  display:flex; flex-direction:column; align-items:center; gap:2px;}
+nav button .ico{font-size:22px;}
+nav button.active{color:var(--txt); border-top-color:var(--acc);}
 main{padding:14px 14px 90px; max-width:720px; margin:0 auto;}
+.thumb.lib-sel{border-color:var(--acc);}
+.threedot{position:absolute; top:4px; right:4px; background:rgba(0,0,0,.6);
+  color:#fff; border:none; border-radius:50%; width:28px; height:28px;
+  font-size:16px; cursor:pointer; line-height:1;}
+.selcheck{position:absolute; top:4px; left:4px; background:var(--acc);
+  color:#fff; border-radius:50%; width:24px; height:24px; font-size:14px;
+  display:flex; align-items:center; justify-content:center;}
+.action-sheet{position:fixed; inset:0; z-index:100;}
+.as-backdrop{position:absolute; inset:0; background:rgba(0,0,0,.5);}
+.as-menu{position:absolute; bottom:0; left:0; right:0; background:var(--card);
+  border-radius:16px 16px 0 0; padding:8px; padding-bottom:env(safe-area-inset-bottom);}
+.as-title{padding:12px; font-weight:700; text-align:center; color:var(--dim);
+  font-size:14px; border-bottom:1px solid var(--line); margin-bottom:8px;}
+.as-item{display:block; width:100%; padding:16px; background:none; border:none;
+  color:var(--txt); font-size:17px; text-align:center; cursor:pointer;
+  border-radius:10px; min-height:52px;}
+.as-item:active{background:var(--card2);}
+.as-item.danger{color:var(--err);}
+.sec{font-size:14px; text-transform:uppercase; letter-spacing:1px;
+  color:var(--dim); margin:18px 0 8px;}
+main{padding:14px 14px 90px; max-width:720px; margin:0 auto;}
+.thumb.lib-sel{border-color:var(--acc);}
+.threedot{position:absolute; top:4px; right:4px; background:rgba(0,0,0,.6);
+  color:#fff; border:none; border-radius:50%; width:28px; height:28px;
+  font-size:16px; cursor:pointer; line-height:1;}
+.selcheck{position:absolute; top:4px; left:4px; background:var(--acc);
+  color:#fff; border-radius:50%; width:24px; height:24px; font-size:14px;
+  display:flex; align-items:center; justify-content:center;}
+.action-sheet{position:fixed; inset:0; z-index:100;}
+.as-backdrop{position:absolute; inset:0; background:rgba(0,0,0,.5);}
+.as-menu{position:absolute; bottom:0; left:0; right:0; background:var(--card);
+  border-radius:16px 16px 0 0; padding:8px; padding-bottom:env(safe-area-inset-bottom);}
+.as-title{padding:12px; font-weight:700; text-align:center; color:var(--dim);
+  font-size:14px; border-bottom:1px solid var(--line); margin-bottom:8px;}
+.as-item{display:block; width:100%; padding:16px; background:none; border:none;
+  color:var(--txt); font-size:17px; text-align:center; cursor:pointer;
+  border-radius:10px; min-height:52px;}
+.as-item:active{background:var(--card2);}
+.as-item.danger{color:var(--err);}
+.sec{font-size:14px; text-transform:uppercase; letter-spacing:1px;
+  color:var(--dim); margin:18px 0 8px;}
 .screen{display:none;}
 .screen.active{display:block;}
 .bigbtn{display:block; width:100%; padding:22px; margin:12px 0;
@@ -83,41 +135,74 @@ textarea, input[type=text]{width:100%; background:var(--card2); color:var(--txt)
 .row .bigbtn{margin:6px 0;}
 .hidden{display:none !important;}
 footer.hint{text-align:center; color:var(--dim); font-size:13px; padding:20px;}
+/* edit + v2v + longvideo controls */
+.opcard{background:var(--card); border:1px solid var(--line); border-radius:12px;
+  padding:14px; margin:10px 0;}
+.opcard .opname{font-weight:700; font-size:16px; margin-bottom:4px;}
+.opcard .opdesc{color:var(--dim); font-size:13px; margin-bottom:10px;}
+.ctl-row{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:6px 0;}
+.ctl-row label{color:var(--dim); font-size:14px; min-width:64px;}
+.ctl-row input[type=number]{width:90px; background:var(--card2); color:var(--txt);
+  border:1px solid var(--line); border-radius:8px; padding:10px; font-size:16px;}
+input[type=range]{flex:1; min-width:120px; accent-color:var(--acc); height:36px;}
+.chipbtn{background:var(--card2); color:var(--txt); border:1px solid var(--line);
+  border-radius:20px; padding:10px 16px; font-size:15px; font-weight:600;
+  cursor:pointer; min-height:48px;}
+.chipbtn:active{background:var(--acc2); border-color:var(--acc2);}
+.chipbtn.sel{background:var(--acc2); border-color:var(--acc2); color:#fff;}
+.qsel{display:flex; gap:8px; margin:8px 0;}
+.qsel .chipbtn{flex:1; text-align:center;}
+.qsel .chipbtn small{display:block; font-weight:400; color:var(--dim); font-size:12px;}
+.qsel .chipbtn.sel small{color:#cfe3ff;}
+.modelcard.on{border-color:var(--acc);}
+.beatbox{width:100%; background:var(--card2); color:var(--txt);
+  border:1px solid var(--line); border-radius:10px; padding:12px; font-size:15px;
+  margin:6px 0; min-height:64px;}
+.beatlabel{color:var(--dim); font-size:13px; margin-top:10px;}
+.phase-line{text-align:center; color:var(--dim); margin-top:10px; font-size:15px;}
+.phase-line b{color:var(--txt);}
 </style>
 </head>
 <body>
 <header><h1>MYAI <span>Studio</span></h1></header>
 <nav>
-  <button data-screen="upload" class="active">Upload</button>
-  <button data-screen="gallery">Gallery</button>
-  <button data-screen="effects">Effects</button>
-  <button data-screen="generate">Generate</button>
+  <button data-screen="create" class="active"><span class="ico">🎬</span>Create</button>
+  <button data-screen="library"><span class="ico">🖼️</span>Library</button>
+  <button data-screen="jobs"><span class="ico">⏳</span>Jobs</button>
+  <button data-screen="edit"><span class="ico">✂️</span>Edit</button>
 </nav>
 <main>
-  <!-- UPLOAD -->
-  <section id="screen-upload" class="screen active">
+  <!-- LIBRARY (uploads + outputs) -->
+  <section id="screen-library" class="screen">
     <button class="bigbtn" id="btn-pick">📷 Upload Photos / Videos</button>
     <input type="file" id="file-input" accept="image/*,video/*" multiple class="hidden">
     <div class="note">Files stay on your private server. Nothing is sent anywhere.</div>
     <div id="upload-list"></div>
-  </section>
-
-  <!-- GALLERY -->
-  <section id="screen-gallery" class="screen">
+    <div style="display:flex;gap:8px;margin:12px 0;align-items:center">
+      <div id="lib-filters" style="display:flex;gap:8px;flex:1">
+        <button class="chipbtn sel" data-filter="all">All</button>
+        <button class="chipbtn" data-filter="image">Photos</button>
+        <button class="chipbtn" data-filter="video">Videos</button>
+      </div>
+      <button class="chipbtn" id="lib-select-btn">Select</button>
+    </div>
+    <div id="lib-select-bar" class="hidden" style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="bigbtn ghost" id="lib-delete-sel" style="flex:1;min-height:48px;padding:10px">🗑️ Delete (<span id="lib-sel-count">0</span>)</button>
+      <button class="bigbtn ghost" id="lib-cancel-sel" style="flex:1;min-height:48px;padding:10px">Cancel</button>
+    </div>
     <div id="gallery-grid" class="grid"></div>
     <div id="gallery-empty" class="note">No media yet — upload something first.</div>
-    <footer class="hint">Tap a photo or video to select it, then pick an effect.</footer>
+    <footer class="hint">Tap ⋯ on any item for actions. Tap Select for bulk delete.</footer>
   </section>
 
-  <!-- EFFECTS -->
-  <section id="screen-effects" class="screen">
+  <!-- CREATE -->
+  <section id="screen-create" class="screen active">
+    <div id="gen-status"></div>
+    <h2 class="sec">Effects & Filters</h2>
     <div id="fx-sel"></div>
     <div id="fx-list"></div>
-  </section>
+    <h2 class="sec">AI Generation</h2>
 
-  <!-- GENERATE -->
-  <section id="screen-generate" class="screen">
-    <div id="gen-status"></div>
     <div id="gen-pick-media" class="hidden">
       <div class="note">This needs a photo — pick one:</div>
       <div id="gen-grid" class="grid"></div>
@@ -129,6 +214,14 @@ footer.hint{text-align:center; color:var(--dim); font-size:13px; padding:20px;}
     <div id="gen-confirm" class="confirm hidden">
       <div class="name" id="gen-confirm-name" style="font-weight:700"></div>
       <div id="gen-confirm-refs"></div>
+      <div id="gen-model-wrap" class="hidden" style="margin:8px 0">
+        <label style="font-size:13px;color:var(--dim)">AI Model</label>
+        <select id="gen-model-sel" style="width:100%;margin-top:4px;padding:8px;border-radius:8px;background:var(--bg2);color:var(--fg);border:1px solid var(--line)"></select>
+      </div>
+      <div id="gen-dur-wrap" class="hidden" style="margin:8px 0">
+        <label style="font-size:13px;color:var(--dim)">Video Length</label>
+        <select id="gen-dur-sel" style="width:100%;margin-top:4px;padding:8px;border-radius:8px;background:var(--bg2);color:var(--fg);border:1px solid var(--line)"></select>
+      </div>
       <div class="price" id="gen-confirm-cost"></div>
       <div class="desc" id="gen-confirm-desc" style="color:var(--dim);font-size:14px"></div>
       <div class="row">
@@ -137,12 +230,64 @@ footer.hint{text-align:center; color:var(--dim); font-size:13px; padding:20px;}
       </div>
     </div>
     <div id="gen-result"></div>
+
+    <!-- AI RESTYLE (V2V) -->
+    <div id="gen-restyle" class="hidden">
+      <h2 class="sec">AI Restyle — video to video</h2>
+      <div id="restyle-sel"></div>
+      <div id="restyle-models"></div>
+      <h2 class="sec">Quality</h2>
+      <div id="restyle-quality" class="qsel"></div>
+      <h2 class="sec">Prompt</h2>
+      <textarea id="restyle-prompt" rows="3" placeholder="Describe the restyle — e.g. 'cinematic noir, rain, neon reflections'"></textarea>
+      <div id="restyle-cost" class="note"></div>
+      <button class="bigbtn" id="restyle-go">🎬 Restyle Video</button>
+      <button class="bigbtn ghost" id="restyle-back">↩ Back</button>
+    </div>
+
+    <!-- LONG VIDEO (chained) -->
+    <div id="gen-longvideo" class="hidden">
+      <h2 class="sec">Long Video — minutes, one continuous shot</h2>
+      <div id="lv-sel"></div>
+      <h2 class="sec">Story prompt (full narrative arc)</h2>
+      <textarea id="lv-prompt" rows="4" placeholder="The whole story — it will be split into sequential beats, one per clip"></textarea>
+      <h2 class="sec">Target duration</h2>
+      <div id="lv-durations" class="ctl-row"></div>
+      <h2 class="sec">Quality</h2>
+      <div id="lv-quality" class="qsel"></div>
+      <h2 class="sec">Chaining</h2>
+      <div id="lv-chainmode" class="ctl-row"></div>
+      <div class="ctl-row">
+        <button class="chipbtn sel" id="lv-overlap" data-on="1">Overlap + crossfade (seamless joins)</button>
+      </div>
+      <button class="bigbtn ghost" id="lv-beats-btn">📝 Preview story beats</button>
+      <div id="lv-beats-list"></div>
+      <div id="lv-cost" class="note"></div>
+      <button class="bigbtn" id="lv-go">🎬 Generate Long Video</button>
+      <button class="bigbtn ghost" id="lv-back">↩ Back</button>
+    </div>
+  </section>
+
+  <!-- JOBS -->
+  <section id="screen-jobs" class="screen">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h2 class="sec" style="margin:0">Jobs</h2>
+      <button class="chipbtn" onclick="refreshJobs()" style="padding:6px 14px">↻ Refresh</button>
+    </div>
+    <div id="jobs-list"></div>
+    <div id="jobs-empty" class="note hidden">No jobs yet.</div>
   </section>
 
   <!-- RESULT -->
   <section id="screen-result" class="screen">
     <div id="result-body"></div>
     <button class="bigbtn ghost" id="btn-again">↩ Try another effect</button>
+  </section>
+
+  <!-- EDIT VIDEO -->
+  <section id="screen-edit" class="screen">
+    <div id="edit-sel"></div>
+    <div id="edit-ops"></div>
   </section>
 </main>
 
@@ -163,7 +308,31 @@ function show(name){
   window.scrollTo(0,0);
 }
 document.querySelectorAll("nav button").forEach(b=>
-  b.addEventListener("click", ()=>{ show(b.dataset.screen); if(b.dataset.screen==="gallery") loadGallery(); }));
+  b.addEventListener("click", ()=>{ show(b.dataset.screen);
+    if(b.dataset.screen==="library") loadGallery();
+    if(b.dataset.screen==="jobs") refreshJobs();
+  }));
+// Library: filters + select mode
+document.querySelectorAll("#lib-filters .chipbtn").forEach(b=>
+  b.addEventListener("click", ()=>{
+    document.querySelectorAll("#lib-filters .chipbtn").forEach(x=>x.classList.remove("sel"));
+    b.classList.add("sel"); libFilter = b.dataset.filter; renderGalleryGrid();
+  }));
+$("#lib-select-btn").addEventListener("click", ()=>{
+  libSelectMode = !libSelectMode; libSelected.clear();
+  $("#lib-select-btn").textContent = libSelectMode ? "Done" : "Select";
+  renderGalleryGrid();
+});
+$("#lib-cancel-sel").addEventListener("click", ()=>{
+  libSelectMode = false; libSelected.clear();
+  $("#lib-select-btn").textContent = "Select"; renderGalleryGrid();
+});
+$("#lib-delete-sel").addEventListener("click", async ()=>{
+  if(!libSelected.size) return;
+  if(!confirm(`Delete ${libSelected.size} item(s)?`)) return;
+  await deleteMedia([...libSelected]);
+  libSelectMode = false; $("#lib-select-btn").textContent = "Select";
+});
 
 async function api(path, opts){
   const r = await fetch(path, opts);
@@ -201,21 +370,78 @@ async function uploadOne(f){
 function esc(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
 /* ---------- gallery ---------- */
+let libFilter = "all";
+let libSelectMode = false;
+let libSelected = new Set();
+let libItems = [];
 async function loadGallery(){
   const grid = $("#gallery-grid");
   try{
     const data = await api("/api/media");
-    const items = data.media||[];
-    $("#gallery-empty").style.display = items.length ? "none" : "block";
-    grid.innerHTML = "";
-    for(const m of items){
-      const d = document.createElement("div");
-      d.className = "thumb" + (selected && selected.name===m.name ? " sel" : "");
-      d.innerHTML = `<img loading="lazy" src="${m.thumb}" alt="">${m.type==="video"?'<span class="vtag">▶</span>':""}`;
-      d.addEventListener("click", ()=>{ selected = m; loadGallery(); show("effects"); renderEffects(); });
-      grid.appendChild(d);
-    }
+    libItems = data.media||[];
+    renderGalleryGrid();
   }catch(e){ grid.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+}
+function renderGalleryGrid(){
+  const grid = $("#gallery-grid");
+  const items = libItems.filter(m => libFilter==="all" || m.type===libFilter);
+  $("#gallery-empty").style.display = items.length ? "none" : "block";
+  grid.innerHTML = "";
+  for(const m of items){
+    const d = document.createElement("div");
+    d.className = "thumb" + (selected && selected.name===m.name ? " sel" : "")
+      + (libSelected.has(m.name) ? " lib-sel" : "");
+    d.innerHTML = `<img loading="lazy" src="${m.thumb}" alt="">${m.type==="video"?'<span class="vtag">▶</span>':""}`
+      + `<button class="threedot" data-name="${esc(m.name)}">⋯</button>`
+      + (libSelectMode ? `<div class="selcheck">${libSelected.has(m.name)?"✓":""}</div>` : "");
+    d.querySelector(".threedot").addEventListener("click", (e)=>{ e.stopPropagation(); showMediaMenu(m); });
+    d.addEventListener("click", ()=>{
+      if(libSelectMode){ toggleLibSelect(m.name); return; }
+      selected = m; renderGalleryGrid(); show("create"); renderEffects();
+    });
+    grid.appendChild(d);
+  }
+  updateLibSelectBar();
+}
+function toggleLibSelect(name){
+  if(libSelected.has(name)) libSelected.delete(name); else libSelected.add(name);
+  renderGalleryGrid();
+}
+function updateLibSelectBar(){
+  $("#lib-sel-count").textContent = libSelected.size;
+  $("#lib-select-bar").classList.toggle("hidden", !libSelectMode);
+}
+function showMediaMenu(m){
+  const existing = document.querySelector(".action-sheet");
+  if(existing) existing.remove();
+  const sheet = document.createElement("div");
+  sheet.className = "action-sheet";
+  sheet.innerHTML = `<div class="as-backdrop"></div><div class="as-menu">
+    <div class="as-title">${esc(m.name)}</div>
+    <button class="as-item" data-act="use">🎬 Use in Create</button>
+    <button class="as-item danger" data-act="delete">🗑️ Delete</button>
+    <button class="as-item" data-act="cancel">Cancel</button>
+  </div>`;
+  document.body.appendChild(sheet);
+  sheet.querySelector(".as-backdrop").addEventListener("click", ()=>sheet.remove());
+  sheet.querySelector('[data-act="cancel"]').addEventListener("click", ()=>sheet.remove());
+  sheet.querySelector('[data-act="use"]').addEventListener("click", ()=>{
+    sheet.remove(); selected = m; show("create"); renderEffects();
+  });
+  sheet.querySelector('[data-act="delete"]').addEventListener("click", async ()=>{
+    sheet.remove();
+    if(!confirm(`Delete ${m.name}?`)) return;
+    await deleteMedia([m.name]);
+  });
+}
+async function deleteMedia(names){
+  try{
+    const r = await api("/api/media/delete", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({names})});
+    libSelected.clear();
+    await loadGallery();
+  }catch(e){ alert("Delete failed: " + e.message); }
 }
 
 /* ---------- effects ---------- */
@@ -255,8 +481,83 @@ async function startJob(kind, name, params){
     $("#result-body").innerHTML = `<div class="err">${esc(e.message)}</div>`;
   }
 }
-function pollJob(jobId){
-  clearInterval(pollTimer);
+async function cancelJob(jobId){
+  if(!confirm("Cancel this job? You won't be charged for clips that haven't started.")) return;
+  try{
+    await api("/api/job/cancel", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({job_id: jobId})});
+    refreshJobs();
+  }catch(e){ alert("Cancel failed: " + e.message); }
+}
+async function previewClips(jobId, detailId){
+  const detail = document.getElementById(detailId);
+  if(!detail) return;
+  // Expand the detail section so clips are visible.
+  detail.classList.remove("hidden");
+  let wrap = detail.querySelector(".clip-previews");
+  if(wrap){ wrap.remove(); return; }  // toggle off
+  wrap = document.createElement("div");
+  wrap.className = "clip-previews";
+  wrap.innerHTML = '<div style="color:var(--dim);margin:8px 0">Loading clips…</div>';
+  detail.appendChild(wrap);
+  try{
+    const r = await api("/api/job/" + encodeURIComponent(jobId) + "/clips");
+    const clips = r.clips || [];
+    if(!clips.length){
+      wrap.innerHTML = '<div style="color:var(--dim);margin:8px 0">No clips yet — check back after the first one finishes.</div>';
+      return;
+    }
+    wrap.innerHTML = clips.map(c =>
+      '<div style="margin:8px 0"><div style="font-size:12px;color:var(--dim);margin-bottom:4px">' + esc(c.name) + '</div>' +
+      '<video controls preload="metadata" style="width:100%;max-height:220px;border-radius:8px;background:#000" src="' + esc(c.url) + '"></video></div>'
+    ).join("");
+  }catch(e){
+    wrap.innerHTML = '<div class="err">Could not load clips: ' + esc(e.message) + '</div>';
+  }
+}
+function fmtElapsed(s){
+  s = Math.floor(s);
+  if(s < 60) return s + "s";
+  if(s < 3600) return Math.floor(s/60) + "m " + (s%60) + "s";
+  return Math.floor(s/3600) + "h " + Math.floor((s%3600)/60) + "m";
+}
+async function refreshJobs(){
+  const el = document.querySelector("#jobs-list");
+  if(!el) return;
+  try{
+    const r = await api("/api/jobs");
+    const jobs = r.jobs || [];
+    const emptyEl = document.querySelector("#jobs-empty");
+    if(!jobs.length){ el.innerHTML = ""; if(emptyEl) emptyEl.classList.remove("hidden"); return; }
+    if(emptyEl) emptyEl.classList.add("hidden");
+    el.innerHTML = jobs.map(j=>{
+      const st = j.status === "done" ? "✅" : (j.status === "failed" || j.status === "error") ? "❌" : "⏳";
+      const prog = (j.status === "running" || j.status === "queued") ? " " + (j.progress||0) + "%" : "";
+      const phase = j.phase ? " — " + esc(j.phase) : "";
+      const link = j.result_url ? ' <a href="' + esc(j.result_url) + '" style="color:var(--blue)">▶ view</a>' : "";
+      const err = j.error ? '<div class="err" style="margin-top:4px">' + esc(String(j.error).slice(0,200)) + "</div>" : "";
+      const resume = (j.status === "running" || j.status === "queued") ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:8px" onclick="event.stopPropagation();pollJob(\'' + j.job_id + '\')">watch</button>' : "";
+      const cancel = (j.status === "running" || j.status === "queued") ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:4px;color:var(--err)" onclick="event.stopPropagation();cancelJob(\'' + j.job_id + '\')">✕</button>' : "";
+      const clipsBtn = (j.status === "running" || j.status === "queued" || j.status === "done") ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:4px" onclick="event.stopPropagation();previewClips(\'' + j.job_id + '\',\'' + detailId + '\')">🎬 clips</button>' : "";
+      const bar = (j.status === "running" || j.status === "queued") ? '<div style="background:var(--card2);border-radius:6px;height:6px;margin-top:8px"><div style="background:var(--acc);height:6px;border-radius:6px;width:' + (j.progress||0) + '%"></div></div>' : "";
+      const jid = esc(j.job_id);
+      const detailId = "job-detail-" + jid;
+      const created = j.created ? new Date(j.created*1000).toLocaleString() : "";
+      const elapsed = j.created ? fmtElapsed(Date.now()/1000 - j.created) : "";
+      const detailHtml = '<div id="' + detailId + '" class="hidden" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:13px;color:var(--dim)">'
+        + '<div><b style="color:var(--txt)">Job ID:</b> ' + jid + '</div>'
+        + (j.phase ? '<div><b style="color:var(--txt)">Phase:</b> ' + esc(j.phase) + '</div>' : "")
+        + '<div><b style="color:var(--txt)">Status:</b> ' + esc(j.status) + ' (' + (j.progress||0) + '%)</div>'
+        + (created ? '<div><b style="color:var(--txt)">Started:</b> ' + esc(created) + ' (' + elapsed + ' ago)</div>' : "")
+        + (j.error ? '<div style="margin-top:8px"><b style="color:var(--err)">Error:</b><div class="err" style="margin-top:4px;white-space:pre-wrap">' + esc(String(j.error)) + '</div></div>' : "")
+        + (j.result_url ? '<div style="margin-top:8px"><a href="' + esc(j.result_url) + '" style="color:var(--acc)">▶ View result</a></div>' : "")
+        + '</div>';
+      return '<div class="card" style="margin-bottom:8px;padding:10px;display:block;cursor:pointer" onclick="document.getElementById(\'' + detailId + '\').classList.toggle(\'hidden\')">'
+        + '<div>' + st + " <b>" + esc(j.name||j.kind) + "</b>" + prog + phase + link + resume + cancel + clipsBtn + "</div>" + bar + detailHtml + err + "</div>";
+    }).join("");
+  }catch(e){ el.innerHTML = '<div class="err">Failed to load jobs</div>'; }
+}
+function pollJob(jobId){  clearInterval(pollTimer);
   const tick = async ()=>{
     try{
       const j = await api("/api/job/"+jobId);
@@ -277,7 +578,7 @@ function pollJob(jobId){
   pollTimer = setInterval(tick, 2000);
   tick();
 }
-$("#btn-again").addEventListener("click", ()=> show("effects"));
+$("#btn-again").addEventListener("click", ()=> show("create"));
 
 /* ---------- generate ---------- */
 async function ensureGen(){
@@ -285,6 +586,7 @@ async function ensureGen(){
 }
 async function renderGenerate(){
   await ensureGen();
+  refreshJobs();
   const st = $("#gen-status");
   st.innerHTML = genOpts.configured
     ? `<div class="note">✅ Paid generation ready.</div>`
@@ -403,10 +705,60 @@ function pickGenMediaMulti(cb){
   });
   show("generate");
 }
+// Uncensored Venice I2V models with their max durations
+const UNCENSORED_I2V_MODELS = [
+  {id:"venice-wan27-uncensored", name:"Wan 2.7 Enhanced (Uncensored)", max_s:15, cost_per_s:0.128},
+];
+function i2vDurOptions(max_s){
+  const opts = [];
+  for(let s=5; s<=max_s; s+=5) opts.push(s);
+  if(max_s % 5 !== 0 && !opts.includes(max_s)) opts.push(max_s);
+  return opts;
+}
+function refreshGenCost(){
+  const o = pendingGen && pendingGen.opt;
+  if(!o) return;
+  const msel = $("#gen-model-sel");
+  const dsel = $("#gen-dur-sel");
+  const mid = msel.value;
+  const dur = parseFloat(dsel.value) || 5;
+  const m = UNCENSORED_I2V_MODELS.find(x=>x.id===mid);
+  const cost = m ? (m.cost_per_s * dur) : 0;
+  $("#gen-confirm-cost").textContent = "Estimated cost: ~$" + cost.toFixed(2) + "/clip (" + dur + "s)";
+}
 function confirmGen(o, refs){
   pendingGen = {opt:o, refs: refs||null};
   $("#gen-prompt-wrap").classList.toggle("hidden", !o.needs_prompt);
   $("#gen-confirm-name").textContent = o.name;
+  // Show model + duration dropdowns for Venice I2V options
+  const isVeniceI2V = (o.id==="i2v_venice" || o.id==="i2v_venice_uncensored");
+  $("#gen-model-wrap").classList.toggle("hidden", !isVeniceI2V);
+  $("#gen-dur-wrap").classList.toggle("hidden", !isVeniceI2V);
+  if(isVeniceI2V){
+    const msel = $("#gen-model-sel");
+    msel.innerHTML = "";
+    for(const m of UNCENSORED_I2V_MODELS){
+      const op = document.createElement("option");
+      op.value = m.id; op.textContent = "🔓 " + m.name + " (up to " + m.max_s + "s)";
+      msel.appendChild(op);
+    }
+    const dsel = $("#gen-dur-sel");
+    const rebuildDur = ()=>{
+      const m = UNCENSORED_I2V_MODELS.find(x=>x.id===msel.value);
+      const maxs = m ? m.max_s : 15;
+      dsel.innerHTML = "";
+      for(const s of i2vDurOptions(maxs)){
+        const op = document.createElement("option");
+        op.value = s; op.textContent = s + " seconds (~$" + (m.cost_per_s*s).toFixed(2) + ")";
+        if(s===5) op.selected = true;
+        dsel.appendChild(op);
+      }
+      refreshGenCost();
+    };
+    msel.onchange = rebuildDur;
+    dsel.onchange = refreshGenCost;
+    rebuildDur();
+  }
   let cost = o.cost;
   if(o.id==="i2v" && refs && refs.length>1){
     const hasVid = refs.some(m=>m.type==="video");
@@ -440,6 +792,13 @@ $("#gen-confirm-yes").addEventListener("click", async ()=>{
     payload.reference_videos = refs.filter(m=>m.type==="video").map(m=>m.name);
     payload.media = refs[0].name;
   }
+  // Venice I2V: include selected uncensored model + duration
+  if(o.id==="i2v_venice" || o.id==="i2v_venice_uncensored"){
+    const msel = $("#gen-model-sel");
+    const dsel = $("#gen-dur-sel");
+    if(msel && msel.value) payload.venice_model = msel.value;
+    if(dsel && dsel.value) payload.duration_s = parseFloat(dsel.value);
+  }
   try{
     const r = await api("/api/generate", {method:"POST",
       headers:{"Content-Type":"application/json"},
@@ -458,7 +817,388 @@ $("#gen-confirm-yes").addEventListener("click", async ()=>{
     }
   }catch(e){ box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
 });
-document.querySelector('nav button[data-screen="generate"]').addEventListener("click", renderGenerate);
+document.querySelector('nav button[data-screen="create"]').addEventListener("click", renderGenerate);
+
+/* ---------- edit video ---------- */
+let editMedia2 = null;  // second video for merge
+
+async function renderEdit(){
+  const sel = $("#edit-sel"), ops = $("#edit-ops");
+  if(!selected || selected.type!=="video"){
+    sel.innerHTML = `<div class="note">Pick a video first:</div><div id="edit-grid" class="grid"></div>`;
+    ops.innerHTML = "";
+    const g = sel.querySelector("#edit-grid");
+    try{
+      const data = await api("/api/media");
+      const items = (data.media||[]).filter(m=>m.type==="video");
+      if(!items.length){ g.innerHTML = `<div class="note">No videos yet — upload one first.</div>`; return; }
+      for(const m of items){
+        const d = document.createElement("div");
+        d.className = "thumb";
+        d.innerHTML = `<img loading="lazy" src="${m.thumb}"><span class="vtag">▶</span>`;
+        d.addEventListener("click", ()=>{ selected = m; renderEdit(); });
+        g.appendChild(d);
+      }
+    }catch(e){ g.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+    return;
+  }
+  sel.innerHTML = `<div class="selbar"><img src="${selected.thumb}"><div><b>${esc(selected.name)}</b><br><span style="color:var(--dim);font-size:13px">video</span></div><button class="chipbtn" id="edit-change">Change</button></div>`;
+  sel.querySelector("#edit-change").addEventListener("click", ()=>{ selected = null; renderEdit(); });
+  ops.innerHTML = "";
+  const mk = (title, desc, bodyHTML, onMount)=>{
+    const d = document.createElement("div");
+    d.className = "opcard";
+    d.innerHTML = `<div class="opname">${title}</div><div class="opdesc">${desc}</div><div class="opbody">${bodyHTML}</div>`;
+    ops.appendChild(d);
+    if(onMount) onMount(d);
+    return d;
+  };
+  const goBtn = (label)=>`<button class="bigbtn" data-go style="margin:8px 0;min-height:56px;padding:14px">${label}</button>`;
+  const startEdit = (op, params)=>{
+    show("result");
+    $("#result-body").innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">Editing <b>${esc(op)}</b>…</p>`;
+    api("/api/apply", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({media:selected.name, kind:"video_edit", name:op, params})})
+      .then(r=>pollJob(r.job_id))
+      .catch(e=>{ $("#result-body").innerHTML = `<div class="err">${esc(e.message)}</div>`; });
+  };
+
+  mk("✂️ Trim", "Keep only a segment of the clip.",
+    `<div class="ctl-row"><label>Start</label><input type="number" data-p="start" value="0" min="0" step="0.5"><label>End</label><input type="number" data-p="end" value="0" min="0" step="0.5"></div>
+     <div class="note" style="margin:6px 0">End = 0 keeps to the end of the clip.</div>${goBtn("Apply Trim")}`,
+    d=>{ d.querySelector("[data-go]").addEventListener("click", ()=>
+      startEdit("trim", {start:parseFloat(d.querySelector('[data-p=start]').value)||0,
+                         end:parseFloat(d.querySelector('[data-p=end]').value)||0})); });
+
+  mk("⏩ Speed", "Slow-mo or timelapse. Audio pitch-corrected.",
+    `<div class="ctl-row"><input type="range" data-p="factor" min="0.25" max="4" step="0.25" value="1"><b data-v>1x</b></div>${goBtn("Apply Speed")}`,
+    d=>{ const r=d.querySelector('[data-p=factor]'), v=d.querySelector('[data-v]');
+      r.addEventListener("input", ()=> v.textContent = r.value+"x");
+      d.querySelector("[data-go]").addEventListener("click", ()=> startEdit("speed", {factor:parseFloat(r.value)})); });
+
+  mk("🖼 Crop", "Center-crop to an aspect ratio.",
+    `<div class="ctl-row">${["16:9","9:16","1:1"].map(a=>`<button class="chipbtn" data-a="${a}">${a}</button>`).join("")}</div>`,
+    d=>{ d.querySelectorAll("[data-a]").forEach(b=> b.addEventListener("click", ()=> startEdit("crop", {preset:b.dataset.a}))); });
+
+  mk("🔄 Rotate", "Rotate clockwise.",
+    `<div class="ctl-row">${[90,180,270].map(a=>`<button class="chipbtn" data-a="${a}">${a}°</button>`).join("")}</div>`,
+    d=>{ d.querySelectorAll("[data-a]").forEach(b=> b.addEventListener("click", ()=> startEdit("rotate", {angle:parseInt(b.dataset.a)}))); });
+
+  mk("🎨 Filter", "One-tap look.",
+    `<div class="ctl-row">
+      <button class="chipbtn" data-f="grayscale">B&W</button>
+      <button class="chipbtn" data-f="sepia">Sepia</button>
+      <button class="chipbtn" data-f="brightness" data-amt="0.25">Brighter</button>
+      <button class="chipbtn" data-f="contrast" data-amt="1.4">Contrast+</button>
+      <button class="chipbtn" data-f="blur" data-amt="6">Blur</button>
+    </div>`,
+    d=>{ d.querySelectorAll("[data-f]").forEach(b=> b.addEventListener("click", ()=>
+      startEdit("filter", {filter:b.dataset.f, amount:parseFloat(b.dataset.amt||1)}))); });
+
+  mk("◀️ Reverse", "Play the clip backwards.",
+    goBtn("Reverse Clip"),
+    d=>{ d.querySelector("[data-go]").addEventListener("click", ()=> startEdit("reverse", {})); });
+
+  mk("🔗 Merge", "Join with a second video, end to end.",
+    `<div class="ctl-row"><button class="chipbtn" data-pick>Pick 2nd video</button><span data-picklabel style="color:var(--dim);font-size:14px">none picked</span></div>${goBtn("Merge Videos")}`,
+    d=>{ let m2 = null;
+      d.querySelector("[data-pick]").addEventListener("click", ()=>{
+        pickVideoFor("Pick the second video to merge:", (m)=>{
+          m2 = m; d.querySelector("[data-picklabel]").textContent = m.name; });
+      });
+      d.querySelector("[data-go]").addEventListener("click", ()=>{
+        if(!m2){ alert("Pick a second video first."); return; }
+        startEdit("merge", {media2:m2.name}); }); });
+
+  mk("📸 Frame", "Save a still JPG (lands in Gallery for AI use).",
+    `<div class="ctl-row"><label>At</label><input type="number" data-p="timestamp" value="1" min="0" step="0.5"><label>sec</label></div>${goBtn("Save Frame")}`,
+    d=>{ d.querySelector("[data-go]").addEventListener("click", ()=>
+      startEdit("extract_frame", {timestamp:parseFloat(d.querySelector('[data-p=timestamp]').value)||0})); });
+
+  mk("🎞 GIF", "Segment to animated GIF.",
+    `<div class="ctl-row"><label>Start</label><input type="number" data-p="start" value="0" min="0" step="0.5"><label>Length</label><input type="number" data-p="duration" value="3" min="0.5" max="15" step="0.5"></div>${goBtn("Make GIF")}`,
+    d=>{ d.querySelector("[data-go]").addEventListener("click", ()=>
+      startEdit("gif", {start:parseFloat(d.querySelector('[data-p=start]').value)||0,
+                        duration:parseFloat(d.querySelector('[data-p=duration]').value)||3})); });
+}
+
+function pickVideoFor(note, cb){
+  // Simple modal-ish picker using the edit-sel area.
+  const sel = $("#edit-sel");
+  const prev = sel.innerHTML;
+  sel.innerHTML = `<div class="note">${esc(note)}</div><div id="pv-grid" class="grid"></div><button class="chipbtn" id="pv-cancel">Cancel</button>`;
+  sel.querySelector("#pv-cancel").addEventListener("click", ()=>{ sel.innerHTML = prev; bindEditChange(); });
+  api("/api/media").then(data=>{
+    const g = sel.querySelector("#pv-grid");
+    const items = (data.media||[]).filter(m=>m.type==="video" && (!selected || m.name!==selected.name));
+    for(const m of items){
+      const d = document.createElement("div");
+      d.className = "thumb";
+      d.innerHTML = `<img loading="lazy" src="${m.thumb}"><span class="vtag">▶</span>`;
+      d.addEventListener("click", ()=>{ sel.innerHTML = prev; bindEditChange(); cb(m); });
+      g.appendChild(d);
+    }
+  });
+}
+function bindEditChange(){
+  const b = $("#edit-change");
+  if(b) b.addEventListener("click", ()=>{ selected = null; renderEdit(); });
+}
+document.querySelector('nav button[data-screen="edit"]').addEventListener("click", renderEdit);
+
+/* ---------- AI restyle (V2V) ---------- */
+let v2vData = null;
+let restyleModel = null, restyleQuality = "standard", restyleDur = 5;
+
+async function ensureV2V(){
+  if(!v2vData) v2vData = await api("/api/v2v_models");
+  return v2vData;
+}
+function qualitySelector(el, levels, current, onChange){
+  el.innerHTML = "";
+  for(const [id, q] of Object.entries(levels)){
+    const b = document.createElement("button");
+    b.className = "chipbtn" + (id===current ? " sel" : "");
+    b.innerHTML = `${esc(q.label)}<small>${esc(q.resolution)} · ${esc(q.description)}</small>`;
+    b.addEventListener("click", ()=> onChange(id));
+    el.appendChild(b);
+  }
+}
+function showRestyle(){
+  ["#gen-list","#gen-confirm","#gen-result","#gen-longvideo"].forEach(s=>$(s).classList.add("hidden"));
+  const p = $("#gen-restyle");
+  p.classList.remove("hidden");
+  p.scrollIntoView({behavior:"smooth"});
+  ensureV2V().then(d=>{
+    restyleQuality = d.default_quality;
+    const sel = $("#restyle-sel");
+    if(selected && selected.type==="video"){
+      sel.innerHTML = `<div class="selbar"><img src="${selected.thumb}"><div><b>${esc(selected.name)}</b></div><button class="chipbtn" id="rs-change">Change</button></div>`;
+      sel.querySelector("#rs-change").addEventListener("click", ()=> pickGenMedia("video", m=>{ selected = m; showRestyle(); }));
+    }else{
+      sel.innerHTML = `<button class="bigbtn ghost" id="rs-pick">Pick a video to restyle</button>`;
+      sel.querySelector("#rs-pick").addEventListener("click", ()=> pickGenMedia("video", m=>{ selected = m; showRestyle(); }));
+    }
+    const ml = $("#restyle-models");
+    ml.innerHTML = "";
+    for(const m of d.models){
+      const c = document.createElement("div");
+      c.className = "card modelcard" + (!restyleModel && m.uncensored ? " on" : (restyleModel===m.id ? " on" : ""));
+      if(!restyleModel && m.uncensored) restyleModel = m.id;
+      if(restyleModel===m.id) c.classList.add("on");
+      c.innerHTML = `${m.uncensored?'<span class="badge" style="background:rgba(47,129,247,.18);color:#79b8ff;border:1px solid #2f81f7">🔓 UNCENSORED</span>':'<span class="badge paid">$</span>'}<div class="info"><div class="name">${esc(m.name)}</div><div class="desc">${esc(m.description||"")}</div><div class="cost">~$${m.cost_per_s}/s · up to ${m.max_duration_s}s</div></div>`;
+      c.addEventListener("click", ()=>{ restyleModel = m.id;
+        ml.querySelectorAll(".modelcard").forEach(x=>x.classList.remove("on")); c.classList.add("on"); restyleCost(); });
+      ml.appendChild(c);
+    }
+    const setQ = (q)=>{ restyleQuality = q;
+      qualitySelector($("#restyle-quality"), d.quality_levels, q, setQ); restyleCost(); };
+    setQ(restyleQuality);
+    restyleCost();
+  });
+}
+function restyleCost(){
+  if(!v2vData || !restyleModel) return;
+  const m = v2vData.models.find(x=>x.id===restyleModel);
+  const dur = Math.min(restyleDur, m.max_duration_s);
+  $("#restyle-cost").innerHTML = `Estimated cost: <b>~$${(m.cost_per_s*dur).toFixed(2)}</b> (${dur}s ${v2vData.quality_levels[restyleQuality].resolution}) — charged only on completion.`;
+}
+$("#restyle-back").addEventListener("click", ()=>{
+  $("#gen-restyle").classList.add("hidden"); $("#gen-list").classList.remove("hidden");
+});
+$("#restyle-go").addEventListener("click", async ()=>{
+  if(!selected || selected.type!=="video"){ alert("Pick a video first."); return; }
+  if(!restyleModel){ alert("Pick a model."); return; }
+  const prompt = $("#restyle-prompt").value.trim();
+  if(!prompt){ alert("Describe the restyle."); return; }
+  const box = $("#gen-result");
+  box.classList.remove("hidden");
+  box.innerHTML = `<div class="spinner"></div>`;
+  try{
+    const r = await api("/api/v2v", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({media:selected.name, model:restyleModel, prompt,
+                            quality:restyleQuality, duration_s:restyleDur})});
+    if(r.status==="needs_setup"){ box.innerHTML = `<div class="note">⚠️ ${esc(r.message)}</div>`; return; }
+    show("result");
+    $("#result-body").innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">Restyling…<br>Estimated <b>${esc(r.estimate||"")}</b></p>`;
+    pollJob(r.job_id);
+  }catch(e){ box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+});
+
+/* ---------- long video ---------- */
+let lvTarget = 60, lvQuality = "standard", lvChainMode = "lastframe", lvOverlap = true;
+let lvBeats = null, lvRefMedia = null;
+
+function lvClipLen(){
+  // chaining I2V model max duration (uncensored Wan 2.7)
+  if(!v2vData) return 15;
+  const m = (v2vData.chain_i2v_models||[]).find(x=>x.id===v2vData.default_chain_i2v);
+  return (m && m.max_duration_s) || 15;
+}
+function lvPlan(){
+  const clip = lvClipLen(), ov = lvOverlap ? 1.0 : 0.0;
+  const step = clip - ov;
+  const n = Math.max(1, Math.ceil((lvTarget - ov) / step));
+  return {n, clip, ov, total: Math.round(n*clip - (n-1)*ov)};
+}
+function lvCostPerSec(){
+  if(!v2vData) return 0.128;
+  if(lvChainMode==="extend"){
+    const m = v2vData.models.find(x=>x.id==="venice-seedance-r2v");
+    return (m && m.cost_per_s) || 0.30;
+  }
+  const m = (v2vData.chain_i2v_models||[]).find(x=>x.id===v2vData.default_chain_i2v);
+  return (m && m.cost_per_s) || 0.128;
+}
+function showLongVideo(){
+  ["#gen-list","#gen-confirm","#gen-result","#gen-restyle"].forEach(s=>$(s).classList.add("hidden"));
+  const p = $("#gen-longvideo");
+  p.classList.remove("hidden");
+  p.scrollIntoView({behavior:"smooth"});
+  ensureV2V().then(d=>{
+    lvQuality = d.default_quality;
+    // reference picker status
+    const sel = $("#lv-sel");
+    const renderSel = ()=>{
+      sel.innerHTML = lvRefMedia
+        ? `<div class="selbar"><img src="${lvRefMedia.thumb}"><div><b>${esc(lvRefMedia.name)}</b><br><span style="color:var(--dim);font-size:13px">${lvRefMedia.type} — first clip starts here</span></div><button class="chipbtn" id="lv-change">Change</button></div>`
+        : `<button class="bigbtn ghost" id="lv-pick">Pick a photo or video to start from</button>`;
+      const ch = sel.querySelector("#lv-change"), pk = sel.querySelector("#lv-pick");
+      if(ch) ch.addEventListener("click", ()=>{ lvRefMedia = null; renderSel(); });
+      if(pk) pk.addEventListener("click", ()=> pickGenMediaMulti((list)=>{ lvRefMedia = list[0]; renderSel(); }));
+    };
+    renderSel();
+    // durations
+    const dd = $("#lv-durations");
+    dd.innerHTML = "";
+    for(const s of [30, 60, 120, 180, 300]){
+      const b = document.createElement("button");
+      b.className = "chipbtn" + (s===lvTarget ? " sel" : "");
+      b.textContent = s>=60 ? (s/60)+" min" : s+"s";
+      b.addEventListener("click", ()=>{ lvTarget = s; lvBeats = null;
+        $("#lv-beats-list").innerHTML = "";
+        dd.querySelectorAll(".chipbtn").forEach(x=>x.classList.remove("sel")); b.classList.add("sel"); lvCost(); });
+      dd.appendChild(b);
+    }
+    // quality
+    const setQ = (q)=>{ lvQuality = q;
+      qualitySelector($("#lv-quality"), d.quality_levels, q, setQ); lvCost(); };
+    setQ(lvQuality);
+    // chain mode
+    const cm = $("#lv-chainmode");
+    cm.innerHTML = "";
+    for(const m of d.chain_modes){
+      const b = document.createElement("button");
+      b.className = "chipbtn" + (m.id===lvChainMode ? " sel" : "");
+      b.textContent = m.name;
+      b.title = m.description;
+      b.addEventListener("click", ()=>{ lvChainMode = m.id; lvBeats = null;
+        $("#lv-beats-list").innerHTML = "";
+        cm.querySelectorAll(".chipbtn").forEach(x=>x.classList.remove("sel")); b.classList.add("sel"); lvCost(); });
+      cm.appendChild(b);
+    }
+    // overlap toggle
+    const ov = $("#lv-overlap");
+    ov.classList.toggle("sel", lvOverlap);
+    ov.onclick = ()=>{ lvOverlap = !lvOverlap; ov.classList.toggle("sel", lvOverlap);
+      ov.dataset.on = lvOverlap?"1":"0"; lvBeats = null; $("#lv-beats-list").innerHTML=""; lvCost(); };
+    lvCost();
+  });
+}
+function lvCost(){
+  const {n, total} = lvPlan();
+  const est = (n * lvClipLen() * lvCostPerSec()).toFixed(2);
+  $("#lv-cost").innerHTML = `<b>${n} clips</b> → ~${total}s continuous video.<br>Estimated cost: <b>~$${est}</b> (${esc(lvQuality)}) — charged only on completion.`;
+}
+$("#lv-back").addEventListener("click", ()=>{
+  $("#gen-longvideo").classList.add("hidden"); $("#gen-list").classList.remove("hidden");
+});
+$("#lv-beats-btn").addEventListener("click", async ()=>{
+  const prompt = $("#lv-prompt").value.trim();
+  if(!prompt){ alert("Write the story prompt first."); return; }
+  const {n} = lvPlan();
+  const box = $("#lv-beats-list");
+  box.innerHTML = `<div class="spinner"></div>`;
+  try{
+    const r = await api("/api/segment_prompt", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({prompt, n_beats:n})});
+    lvBeats = r.beats;
+    box.innerHTML = `<div class="beatlabel">Story beats — review or edit each clip's prompt:</div>` +
+      r.beats.map((b,i)=>`<div class="beatlabel">Clip ${i+1}</div><textarea class="beatbox" data-beat="${i}" rows="2">${esc(b)}</textarea>`).join("");
+  }catch(e){ box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+});
+$("#lv-go").addEventListener("click", async ()=>{
+  const prompt = $("#lv-prompt").value.trim();
+  if(!prompt){ alert("Write the story prompt first."); return; }
+  if(!lvRefMedia){ alert("Pick a photo or video to start from."); return; }
+  // collect edited beats if shown
+  let beats = null;
+  const areas = document.querySelectorAll("#lv-beats-list textarea[data-beat]");
+  if(areas.length){
+    beats = [...areas].map(a=>a.value.trim()).filter(Boolean);
+    if(!beats.length){ alert("Beats are empty."); return; }
+  }
+  const box = $("#gen-result");
+  box.classList.remove("hidden");
+  box.innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">Planning ${lvPlan().n} clips…</p>`;
+  try{
+    const r = await api("/api/longvideo", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({media:lvRefMedia.name, prompt, beats,
+        target_duration_s:lvTarget, chain_mode:lvChainMode,
+        quality:lvQuality, overlap_s: lvOverlap?1.0:0.0})});
+    if(r.status==="needs_setup"){ box.innerHTML = `<div class="note">⚠️ ${esc(r.message)}</div>`; return; }
+    show("result");
+    $("#result-body").innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">Building <b>${r.n_clips} clips</b>…<br>Estimated <b>${esc(r.estimate||"")}</b></p><div class="phase-line" id="job-phase"></div>`;
+    pollJob(r.job_id);
+  }catch(e){ box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+});
+
+/* ---------- generate option routing (v2v / long video cards) ---------- */
+const _onGenTap = onGenTap;
+onGenTap = function(o){
+  if(o.id==="v2v_restyle"){ showRestyle(); return; }
+  if(o.id==="long_video"){ showLongVideo(); return; }
+  _onGenTap(o);
+};
+
+/* ---------- phase-aware polling ---------- */
+const _pollJob = pollJob;
+pollJob = function(jobId){
+  clearInterval(pollTimer);
+  const tick = async ()=>{
+    try{
+      const j = await api("/api/job/"+jobId);
+      const ph = $("#job-phase");
+      if(j.status==="done"){
+        clearInterval(pollTimer);
+        const isVid = j.result_name && /\.(mp4|mov|webm)$/i.test(j.result_name);
+        $("#result-body").innerHTML =
+          (isVid ? `<video class="result-media" controls src="${j.result_url}"></video>`
+                 : `<img class="result-media" src="${j.result_url}">`) +
+          `<a class="bigbtn" style="text-align:center;text-decoration:none;display:block" href="${j.result_url}" download>⬇ Download</a>`;
+      }else if(j.status==="error"){
+        clearInterval(pollTimer);
+        $("#result-body").innerHTML = `<div class="err">${esc(j.error||"render failed")}</div>`;
+      }else if(j.phase && ph){
+        ph.innerHTML = `<b>${esc(j.phase)}</b>`;
+      }else if(j.phase){
+        const rb = $("#result-body");
+        if(rb && !rb.querySelector(".phase-line")){
+          const d = document.createElement("div");
+          d.className = "phase-line"; d.id = "job-phase";
+          rb.appendChild(d);
+        }
+        const ph2 = $("#job-phase");
+        if(ph2) ph2.innerHTML = `<b>${esc(j.phase)}</b>`;
+      }
+    }catch(e){ clearInterval(pollTimer);
+      $("#result-body").innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  };
+  pollTimer = setInterval(tick, 2000);
+  tick();
+};
 
 /* ---------- init ---------- */
 loadGallery();
