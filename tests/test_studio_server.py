@@ -582,3 +582,53 @@ def test_largest_face_crop_box():
     assert ss._largest_face_crop_box(100, 100, [(0, 0, 40, 40)]) == \
         (0, 0, 58, 58)  # clamped to the image
     assert ss._largest_face_crop_box(100, 100, []) is None
+
+
+def test_run_scail_chunks_chains_and_stitches(tmp_path, monkeypatch):
+    """Long-video SCAIL: 81-frame chunks on a 76-frame step, each
+    continuation anchored on the previous chunk's tail, heads
+    trimmed by the overlap, stitched in order."""
+    calls = {"build": [], "run": []}
+    counts = iter([81, 81, 48])
+
+    class FakeGC:
+        def upload_video(self, path):
+            return "up_" + os.path.basename(path)
+
+        def run_workflow(self, wf, jobdir, **kw):
+            calls["run"].append(jobdir)
+            os.makedirs(jobdir, exist_ok=True)
+            out = os.path.join(jobdir, "out.mp4")
+            open(out, "wb").write(b"x")
+            return [out]
+
+    class FakeGW:
+        def video_replace_model_scail(self, *a, **kw):
+            calls["build"].append(kw)
+            return {"wf": True}
+
+    def fake_count(path):
+        return next(counts)
+
+    monkeypatch.setattr(ss, "_count_frames", fake_count)
+    monkeypatch.setattr(ss, "_scail_segment",
+                        lambda s, a, b, c, out: open(out, "wb").write(b"x"))
+    monkeypatch.setattr(ss, "_scail_trim_head",
+                        lambda s, h, out: open(out, "wb").write(b"x"))
+    monkeypatch.setattr(ss, "_concat_normalized",
+                        lambda parts, out, like: open(out, "wb").write(b"x"))
+    jobdir = str(tmp_path)
+    src = os.path.join(jobdir, "src.mp4")
+    open(src, "wb").write(b"x")
+    out = ss._run_scail_chunks(
+        FakeGC(), FakeGW(), "job-x", jobdir, src, "ref_up", "prompt",
+        "person", 0.4, {"width": 704, "height": 512, "steps": 24},
+        {"duration": 200 / 16.0})
+    assert os.path.basename(out) == "_scail_stitched.mp4"
+    builds = calls["build"]
+    assert [b["frames"] for b in builds] == [81, 81, 48]
+    assert [b["frame_offset"] for b in builds] == [0, 76, 152]
+    assert builds[0]["previous_frames_video"] is None
+    assert builds[1]["previous_frames_video"] == "up_anchor_000.mp4"
+    assert builds[2]["previous_frames_video"] == "up_anchor_001.mp4"
+    assert len(calls["run"]) == 3
