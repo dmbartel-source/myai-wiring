@@ -262,3 +262,32 @@ def test_contact_guard_and_partner_threshold():
     assert wf["34"]["inputs"]["operation"] == "add"
     assert wf["18"]["inputs"]["control_masks"] == ["34", 0]
     assert wf["15"]["inputs"]["mask"] == ["34", 0]
+
+
+def test_video_replace_model_scail_graph():
+    wf = gw.video_replace_model_scail("v.mp4", "r.jpg", "a woman",
+                                      frames=30)
+    assert_links_valid(wf)
+    assert wf["20"]["class_type"] == "WanSCAILToVideo"
+    assert wf["20"]["inputs"]["length"] == 33          # coerced to 4n+1
+    assert wf["20"]["inputs"]["replacement_mode"] is True
+    assert wf["17"]["inputs"]["replacement_mode"] is True
+    assert wf["20"]["inputs"]["pose_video_mask"] == ["17", 0]
+    assert wf["20"]["inputs"]["reference_image_mask"] == ["17", 1]
+    assert wf["14"]["inputs"]["max_objects"] == 1
+    # LoRA chain: UNET -> lightx2v (1.0) -> DPO -> sampling shift 8
+    assert wf["5"]["inputs"]["model"] == ["4", 0]
+    assert wf["5"]["inputs"]["strength_model"] == 1.0
+    assert wf["6"]["inputs"]["model"] == ["5", 0]
+    assert wf["7"]["inputs"]["shift"] == 8.0
+    assert wf["23"]["inputs"]["cfg"] == 1.0
+    assert wf["22"]["inputs"]["steps"] == 6
+    # composite default: output pastes generated her over source frames
+    assert wf["29"]["inputs"]["images"] == ["28", 0]
+    assert wf["28"]["inputs"]["destination"] == ["2", 0]
+
+
+def test_video_replace_model_scail_no_composite():
+    wf = gw.video_replace_model_scail("v.mp4", "r.jpg", composite=False)
+    assert "28" not in wf
+    assert wf["29"]["inputs"]["images"] == ["24", 0]
