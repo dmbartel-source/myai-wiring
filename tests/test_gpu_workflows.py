@@ -198,6 +198,16 @@ def test_video_replace_model_erases_performer_before_vace():
     assert trim["trim_amount"] == ["18", 3]
     dec = nodes_of(wf, "VAEDecode")["21"]["inputs"]
     assert dec["samples"] == ["20", 0]
+    # Composite: only the performer's region is pasted over the
+    # ORIGINAL frames; everything else stays the source pixels.
+    feather = nodes_of(wf, "FeatherMask")["23"]["inputs"]
+    assert feather["mask"] == ["14", 0]
+    paste = nodes_of(wf, "ImageCompositeMasked")["24"]["inputs"]
+    assert paste["destination"] == ["9", 0]
+    assert paste["source"] == ["21", 0]
+    assert paste["mask"] == ["23", 0]
+    combine = nodes_of(wf, "VHS_VideoCombine")["22"]["inputs"]
+    assert combine["images"] == ["24", 0]
 
 
 # -------------------------------------------------------------- escape hatch --
