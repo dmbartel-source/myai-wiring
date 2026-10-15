@@ -38,7 +38,7 @@ if [ -d "$EX_IN" ] && ls "$EX_IN"/* > /dev/null 2>&1; then
   done
   $PY -m musubi_tuner.scail2_prepare_dataset prepare-image \
     --input_dir /workspace/lora_extra_raw --output_dir "$DS" \
-    --mode replace
+    --mode replace --overwrite
   echo "EXTRAS PREPARED"
 fi
 
