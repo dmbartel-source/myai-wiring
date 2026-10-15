@@ -8,7 +8,7 @@ with a video's motion; the Studio uses "replace".)
 
 Hosted on WaveSpeed (not Venice — Venice's Wan lineup has no Animate):
   POST https://api.wavespeed.ai/api/v3/wavespeed-ai/wan-2.2/animate
-  GET  https://api.wavespeed.ai/api/v3/predictions/{id}
+  GET  https://api.wavespeed.ai/api/v3/predictions/{id}/result
 
 Pricing (Oct 2026): 720p $0.40 per 5s, 480p $0.20 per 5s; billed on
 input duration rounded up to whole seconds, 3s minimum, max 120s.
@@ -160,8 +160,11 @@ def submit_replace(image_path: str, video_path: str,
     }
     if seed is not None:
         payload["seed"] = int(seed)
-    resp = _request("POST", f"{API_BASE}/{MODEL_PATH}", payload,
-                    opener=opener)
+    try:
+        resp = _request("POST", f"{API_BASE}/{MODEL_PATH}", payload,
+                        opener=opener)
+    except AnimateError as e:
+        raise AnimateError(f"submit step failed: {e}") from e
     data = resp.get("data") or resp
     job_id = data.get("id") or data.get("task_id")
     if not job_id:
@@ -171,9 +174,24 @@ def submit_replace(image_path: str, video_path: str,
 
 
 def poll(job: AnimateJob, opener: Optional[Callable] = None) -> dict:
-    """One status read. Returns {status, url|None, raw}."""
-    resp = _request("GET", f"{API_BASE}/predictions/{job.job_id}",
-                    opener=opener)
+    """One status read. Returns {status, url|None, raw}.
+
+    WaveSpeed's documented result path is /predictions/{id}/result
+    (an earlier build polled /predictions/{id} and got a 404 page).
+    Fall back to the bare path if /result ever 404s.
+    """
+    try:
+        resp = _request(
+            "GET", f"{API_BASE}/predictions/{job.job_id}/result",
+            opener=opener)
+    except AnimateError as e:
+        if "HTTP 404" not in str(e):
+            raise AnimateError(f"poll step failed: {e}") from e
+        try:
+            resp = _request("GET", f"{API_BASE}/predictions/{job.job_id}",
+                            opener=opener)
+        except AnimateError as e2:
+            raise AnimateError(f"poll step failed: {e2}") from e2
     data = resp.get("data") or resp
     status = str(data.get("status") or "").lower()
     url = None
