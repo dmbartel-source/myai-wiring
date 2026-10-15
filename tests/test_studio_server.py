@@ -551,3 +551,14 @@ def _wait_job_done(base, job_id, timeout=120):
             return job
         time.sleep(0.5)
     return job
+
+
+# --- long-video chunking for model replace (any length) ---
+
+def test_chunk_bounds_cover_full_duration():
+    b = ss._chunk_bounds(219.0, 110.0)
+    assert b == [(0.0, 110.0), (110.0, 109.0)]
+    assert ss._chunk_bounds(60.0, 110.0) == [(0.0, 60.0)]
+    assert ss._chunk_bounds(110.0, 110.0) == [(0.0, 110.0)]
+    total = sum(length for _, length in ss._chunk_bounds(1000.0, 110.0))
+    assert abs(total - 1000.0) < 0.01
