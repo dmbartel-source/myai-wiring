@@ -245,6 +245,26 @@ input[type=range]{flex:1; min-width:120px; accent-color:var(--acc); height:36px;
       <button class="bigbtn ghost" id="restyle-back">↩ Back</button>
     </div>
 
+    <!-- MODEL REPLACE (base video + reference model) -->
+    <div id="gen-modelreplace" class="hidden">
+      <h2 class="sec">Replace Model — base video + reference</h2>
+      <div id="mr-base-sel"></div>
+      <h2 class="sec">Reference model (photo or video)</h2>
+      <div id="mr-ref-sel"></div>
+      <h2 class="sec">Method</h2>
+      <div id="mr-mode" class="qsel">
+        <button data-mode="ai" class="qbtn sel">🤖 AI Replace (~$3.00) — full model, photo or video reference</button>
+        <button data-mode="face" class="qbtn">🙂 Face Replace (FREE, local) — face only, photo reference</button>
+      </div>
+      <div id="mr-prompt-wrap">
+        <h2 class="sec">Prompt (optional)</h2>
+        <textarea id="mr-prompt" rows="3" placeholder="Leave blank for a straight model replacement, or describe adjustments…"></textarea>
+      </div>
+      <div id="mr-cost" class="note"></div>
+      <button class="bigbtn" id="mr-go">🎬 Replace Model</button>
+      <button class="bigbtn ghost" id="mr-back">↩ Back</button>
+    </div>
+
     <!-- LONG VIDEO (chained) -->
     <div id="gen-longvideo" class="hidden">
       <h2 class="sec">Long Video — minutes, one continuous shot</h2>
@@ -538,10 +558,10 @@ async function refreshJobs(){
       const err = j.error ? '<div class="err" style="margin-top:4px">' + esc(String(j.error).slice(0,200)) + "</div>" : "";
       const resume = (j.status === "running" || j.status === "queued") ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:8px" onclick="event.stopPropagation();pollJob(\'' + j.job_id + '\')">watch</button>' : "";
       const cancel = (j.status === "running" || j.status === "queued") ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:4px;color:var(--err)" onclick="event.stopPropagation();cancelJob(\'' + j.job_id + '\')">✕</button>' : "";
-      const clipsBtn = (j.status === "running" || j.status === "queued" || j.status === "done") ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:4px" onclick="event.stopPropagation();previewClips(\'' + j.job_id + '\',\'' + detailId + '\')">🎬 clips</button>' : "";
-      const bar = (j.status === "running" || j.status === "queued") ? '<div style="background:var(--card2);border-radius:6px;height:6px;margin-top:8px"><div style="background:var(--acc);height:6px;border-radius:6px;width:' + (j.progress||0) + '%"></div></div>' : "";
       const jid = esc(j.job_id);
       const detailId = "job-detail-" + jid;
+      const clipsBtn = (j.status === "running" || j.status === "queued" || j.status === "done") ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:4px" onclick="event.stopPropagation();previewClips(\'' + j.job_id + '\',\'' + detailId + '\')">🎬 clips</button>' : "";
+      const bar = (j.status === "running" || j.status === "queued") ? '<div style="background:var(--card2);border-radius:6px;height:6px;margin-top:8px"><div style="background:var(--acc);height:6px;border-radius:6px;width:' + (j.progress||0) + '%"></div></div>' : "";
       const created = j.created ? new Date(j.created*1000).toLocaleString() : "";
       const elapsed = j.created ? fmtElapsed(Date.now()/1000 - j.created) : "";
       const detailHtml = '<div id="' + detailId + '" class="hidden" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:13px;color:var(--dim)">'
@@ -640,7 +660,7 @@ function pickGenMedia(type, cb){
   g.innerHTML = "";
   w.querySelector(".note").textContent = "This needs a photo — pick one:";
   api("/api/media").then(data=>{
-    const items = (data.media||[]).filter(m=>m.type===type);
+    const items = (data.media||[]).filter(m=> type==="any" ? true : m.type===type);
     if(!items.length){ g.innerHTML = `<div class="note">No ${type}s yet — upload one first.</div>`; return; }
     for(const m of items){
       const d = document.createElement("div");
@@ -1025,6 +1045,67 @@ $("#restyle-go").addEventListener("click", async ()=>{
   }catch(e){ box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
 });
 
+/* ---------- model replace ---------- */
+let mrBase = null, mrRef = null, mrMode = "ai";
+function showModelReplace(){
+  ["#gen-list","#gen-confirm","#gen-result","#gen-longvideo","#gen-restyle"].forEach(s=>$(s).classList.add("hidden"));
+  const p = $("#gen-modelreplace");
+  p.classList.remove("hidden");
+  p.scrollIntoView({behavior:"smooth"});
+  const bs = $("#mr-base-sel");
+  if(mrBase){
+    bs.innerHTML = `<div class="selbar"><img src="${mrBase.thumb}"><div><b>${esc(mrBase.name)}</b></div><button class="chipbtn" id="mr-base-change">Change</button></div>`;
+    bs.querySelector("#mr-base-change").addEventListener("click", ()=> pickGenMedia("video", m=>{ mrBase = m; showModelReplace(); }));
+  }else{
+    bs.innerHTML = `<button class="bigbtn ghost" id="mr-base-pick">Pick the base video</button>`;
+    bs.querySelector("#mr-base-pick").addEventListener("click", ()=> pickGenMedia("video", m=>{ mrBase = m; showModelReplace(); }));
+  }
+  const rs = $("#mr-ref-sel");
+  if(mrRef){
+    rs.innerHTML = `<div class="selbar"><img src="${mrRef.thumb}"><div><b>${esc(mrRef.name)}</b></div><button class="chipbtn" id="mr-ref-change">Change</button></div>`;
+    rs.querySelector("#mr-ref-change").addEventListener("click", ()=> pickGenMedia("any", m=>{ mrRef = m; showModelReplace(); }));
+  }else{
+    rs.innerHTML = `<button class="bigbtn ghost" id="mr-ref-pick">Pick a reference photo or video</button>`;
+    rs.querySelector("#mr-ref-pick").addEventListener("click", ()=> pickGenMedia("any", m=>{ mrRef = m; showModelReplace(); }));
+  }
+  $("#mr-mode").querySelectorAll(".qbtn").forEach(b=>{
+    b.classList.toggle("sel", b.dataset.mode===mrMode);
+    b.addEventListener("click", ()=>{ mrMode = b.dataset.mode; showModelReplace(); });
+  });
+  $("#mr-prompt-wrap").classList.toggle("hidden", mrMode==="face");
+  mrCost();
+}
+function mrCost(){
+  const c = $("#mr-cost");
+  if(mrMode==="face"){
+    c.innerHTML = mrRef && mrRef.type!=="image"
+      ? "⚠️ Face mode needs a reference <b>photo</b>."
+      : "Face Replace is <b>FREE</b> and runs on your server — the face comes straight from your reference photo, pixel for pixel.";
+  }else{
+    c.innerHTML = "AI Replace (~$3.00/clip): generative — the AI re-creates the model from your reference. Good for full-body swaps, but it reinterprets rather than copies.";
+  }
+}
+$("#mr-back").addEventListener("click", ()=>{
+  $("#gen-modelreplace").classList.add("hidden"); $("#gen-list").classList.remove("hidden");
+});
+$("#mr-go").addEventListener("click", async ()=>{
+  if(!mrBase){ alert("Pick a base video first."); return; }
+  if(!mrRef){ alert("Pick a reference photo or video."); return; }
+  if(mrMode==="face" && mrRef.type!=="image"){ alert("Face mode needs a reference photo."); return; }
+  const box = $("#gen-result");
+  box.classList.remove("hidden");
+  box.innerHTML = `<div class="spinner"></div>`;
+  try{
+    const r = await api("/api/model_replace", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({media:mrBase.name, ref_media:mrRef.name, mode:mrMode,
+                            prompt:$("#mr-prompt").value.trim()})});
+    if(r.status==="needs_setup"){ box.innerHTML = `<div class="note">⚠️ ${esc(r.message)}</div>`; return; }
+    show("result");
+    $("#result-body").innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">${mrMode==="face"?"Replacing face…":"Replacing model…"}<br>Estimated <b>${esc(r.estimate||"")}</b></p>`;
+    pollJob(r.job_id);
+  }catch(e){ box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+});
+
 /* ---------- long video ---------- */
 let lvTarget = 60, lvQuality = "standard", lvChainMode = "lastframe", lvOverlap = true;
 let lvBeats = null, lvRefMedia = null;
@@ -1160,6 +1241,7 @@ const _onGenTap = onGenTap;
 onGenTap = function(o){
   if(o.id==="v2v_restyle"){ showRestyle(); return; }
   if(o.id==="long_video"){ showLongVideo(); return; }
+  if(o.id==="model_replace"){ showModelReplace(); return; }
   _onGenTap(o);
 };
 
