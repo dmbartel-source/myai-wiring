@@ -103,8 +103,9 @@ RESULTS_DIR = os.environ.get("MYAI_STUDIO_RESULTS",
 JOBS_LOG = os.path.join(RESULTS_DIR, "jobs.jsonl")
 MAX_WORKERS = 2
 
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
-VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
+VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi", ".flv",
+              ".wmv", ".ts", ".m2ts", ".mpg", ".mpeg", ".3gp", ".ogv"}
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI_PATH = os.path.join(HERE, "studio_ui.html")
@@ -1369,6 +1370,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                      "CONTENT_TYPE": self.headers.get("Content-Type", ""),
                      "CONTENT_LENGTH": str(length)})
         saved = []
+        rejected = []
         items = form["files"] if "files" in form else []
         if not isinstance(items, list):
             items = [items]
@@ -1378,7 +1380,14 @@ class StudioHandler(BaseHTTPRequestHandler):
                 continue
             name = us.safe_name(item.filename)
             if media_type(name) is None:
-                continue  # only images and videos
+                # Never silently swallow a file — tell the user exactly
+                # which file was refused and why.
+                rejected.append({
+                    "name": item.filename,
+                    "reason": "unsupported file type "
+                              f"({os.path.splitext(item.filename)[1] or 'no extension'})"
+                })
+                continue
             dest = os.path.join(UPLOAD_DIR, name)
             stem, ext = os.path.splitext(name)
             n = 1
@@ -1406,7 +1415,14 @@ class StudioHandler(BaseHTTPRequestHandler):
                 pass  # never fail an upload on metadata stripping
             saved.append({"name": os.path.basename(dest),
                           "type": media_type(dest), "size": size})
-        self._send_json({"saved": saved})
+        if not saved and rejected:
+            self._send_json(
+                {"error": "No usable file in that upload — " +
+                          "; ".join(f"{r['name']}: {r['reason']}"
+                                    for r in rejected),
+                 "rejected": rejected}, 400)
+            return
+        self._send_json({"saved": saved, "rejected": rejected})
 
     def _api_apply(self):
         body = self._read_json()
