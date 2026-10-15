@@ -1,0 +1,381 @@
+#!/usr/bin/env python3
+"""
+ComfyUI workflow builders for MYAI Studio's self-hosted GPU path.
+
+Each builder returns an API-format workflow dict (node_id -> {class_type,
+inputs}) ready for gpu_client.queue_workflow(). Every meaningful knob is
+a parameter — prompt, negative prompt, seed, steps, cfg, resolution,
+frames, fps, denoise, reference strength — because the point of running
+our own pod is full creative control: nothing is hard-coded that David
+might want to change, and no prompt is ever altered.
+
+Models are open-weights only, chosen for identity fidelity:
+  - Qwen-Image-Edit-2509 (image_edit): instruction edits that keep the
+    reference photo's subject — the true-to-reference image editor.
+  - Wan 2.2 14B FP8, dual high/low-noise pass (image_to_video,
+    text_to_video): the open Wan flagship.
+  - Wan VACE 14B (video_replace_model): reference-to-video — drives a
+    source video's motion/scene with a reference image's subject.
+
+Model filenames live in MODELS below and MUST match runpod/models.txt
+exactly (a test enforces it) — setup_pod.sh downloads precisely these
+files into the pod's network volume.
+
+Native ComfyUI core nodes are used wherever they exist; the only custom
+node pack the video workflows need is ComfyUI-VideoHelperSuite
+(VHS_LoadVideo / VHS_VideoCombine) for video IO.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+try:
+    from . import gpu_client
+except ImportError:  # tools/ used as plain scripts dir
+    import gpu_client
+
+
+# ------------------------------------------------------------- model files --
+# Basenames as ComfyUI's loaders see them (models/<subdir>/<basename>).
+# Keep in sync with runpod/models.txt — tests/test_gpu_workflows.py fails
+# if the two drift apart.
+
+MODELS = {
+    # Qwen-Image-Edit-2509 (Comfy-Org/Qwen-Image-Edit_ComfyUI + Qwen-Image)
+    "qwen_edit_unet": "qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+    "qwen_clip": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+    "qwen_vae": "qwen_image_vae.safetensors",
+    # Wan 2.2 14B FP8 dual-pass (Comfy-Org/Wan_2.2_ComfyUI_Repackaged)
+    "wan_i2v_high": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+    "wan_i2v_low": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+    "wan_t2v_high": "wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors",
+    "wan_t2v_low": "wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors",
+    # Wan shared pieces (Comfy-Org/Wan_2.1_ComfyUI_repackaged)
+    "wan_clip": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+    "wan_vae": "wan_2.1_vae.safetensors",
+    # Wan VACE 14B (Comfy-Org/Wan_2.1_ComfyUI_repackaged; fp16 is the
+    # only 14B build Comfy-Org ships — the H100's 80GB takes it as-is)
+    "vace_unet": "wan2.1_vace_14B_fp16.safetensors",
+}
+
+DEFAULT_NEGATIVE = (
+    "low quality, blurry, distorted, deformed, watermark, text, "
+    "extra limbs, bad anatomy, flicker, morphing"
+)
+
+_WAN_SAMPLER = "euler"
+_WAN_SCHEDULER = "simple"
+_WAN_SHIFT = 8.0  # ModelSamplingSD3 shift used by the official templates
+
+
+def _frames_4n1(frames: int) -> int:
+    """Wan's VAE needs frame counts of the form 4n+1. Round up to fit."""
+    frames = max(5, int(frames))
+    rem = (frames - 1) % 4
+    return frames if rem == 0 else frames + (4 - rem)
+
+
+def queue_workflow(workflow: dict, opener=None) -> "gpu_client.GpuJob":
+    """Raw escape hatch: queue ANY ComfyUI API-format workflow dict.
+
+    Full creative control — a workflow built anywhere (the ComfyUI UI's
+    "Save (API Format)", another tool, by hand) runs as-is.
+    """
+    return gpu_client.queue_workflow(workflow, opener=opener)
+
+
+# ------------------------------------------------------------ image edit ----
+
+def image_edit(
+    reference_image: str,
+    instruction: str,
+    *,
+    negative_prompt: str = "",
+    seed: int = 0,
+    steps: int = 20,
+    cfg: float = 4.0,
+    denoise: float = 1.0,
+    sampler: str = "euler",
+    scheduler: str = "simple",
+    shift: float = 3.1,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    filename_prefix: str = "myai/edit",
+) -> dict:
+    """Edit a reference photo by instruction (Qwen-Image-Edit-2509).
+
+    reference_image: ComfyUI input filename (from gpu_client.upload_image).
+    instruction: the edit, passed to the model exactly as written.
+    width/height: optional output size; omitted = the reference's own
+    resolution (the identity-preserving default).
+    """
+    wf: dict = {
+        "1": {"class_type": "UNETLoader",
+              "inputs": {"unet_name": MODELS["qwen_edit_unet"],
+                         "weight_dtype": "default"}},
+        "2": {"class_type": "CLIPLoader",
+              "inputs": {"clip_name": MODELS["qwen_clip"],
+                         "type": "qwen_image"}},
+        "3": {"class_type": "VAELoader",
+              "inputs": {"vae_name": MODELS["qwen_vae"]}},
+        "4": {"class_type": "LoadImage",
+              "inputs": {"image": reference_image}},
+        "5": {"class_type": "ModelSamplingAuraFlow",
+              "inputs": {"model": ["1", 0], "shift": shift}},
+        "6": {"class_type": "TextEncodeQwenImageEditPlus",
+              "inputs": {"clip": ["2", 0], "vae": ["3", 0],
+                         "image1": ["4", 0], "prompt": instruction}},
+        "7": {"class_type": "TextEncodeQwenImageEditPlus",
+              "inputs": {"clip": ["2", 0], "vae": ["3", 0],
+                         "image1": ["4", 0], "prompt": negative_prompt}},
+        "8": {"class_type": "VAEEncode",
+              "inputs": {"pixels": ["4", 0], "vae": ["3", 0]}},
+        "9": {"class_type": "KSampler",
+              "inputs": {"model": ["5", 0],
+                         "positive": ["6", 0], "negative": ["7", 0],
+                         "latent_image": ["8", 0],
+                         "seed": seed, "steps": steps, "cfg": cfg,
+                         "sampler_name": sampler, "scheduler": scheduler,
+                         "denoise": denoise}},
+        "10": {"class_type": "VAEDecode",
+               "inputs": {"samples": ["9", 0], "vae": ["3", 0]}},
+        "11": {"class_type": "SaveImage",
+               "inputs": {"images": ["10", 0],
+                          "filename_prefix": filename_prefix}},
+    }
+    if width and height:
+        # Explicit output size: scale the reference first; encode and
+        # conditioning both follow the scaled image.
+        wf["12"] = {"class_type": "ImageScale",
+                    "inputs": {"image": ["4", 0], "upscale_method": "lanczos",
+                               "width": int(width), "height": int(height),
+                               "crop": "center"}}
+        wf["6"]["inputs"]["image1"] = ["12", 0]
+        wf["7"]["inputs"]["image1"] = ["12", 0]
+        wf["8"]["inputs"]["pixels"] = ["12", 0]
+    return wf
+
+
+# ------------------------------------------------------------- wan video ----
+
+def _wan_dual_pass(
+    *,
+    high_unet: str,
+    low_unet: str,
+    latent_source: dict,
+    prompt: str,
+    negative_prompt: str,
+    seed: int,
+    steps: int,
+    cfg: float,
+    shift: float,
+    fps: float,
+    filename_prefix: str,
+    cond_from_latent_node: bool,
+) -> dict:
+    """Shared Wan 2.2 14B dual-noise sampling graph.
+
+    latent_source is the node producing (positive, negative, latent) —
+    WanImageToVideo for I2V, or a plain latent + raw text conditioning
+    for T2V (cond_from_latent_node=False with text nodes added by the
+    caller at ids 20/21/22).
+    """
+    wf: dict = {
+        "1": {"class_type": "UNETLoader",
+              "inputs": {"unet_name": high_unet, "weight_dtype": "default"}},
+        "2": {"class_type": "UNETLoader",
+              "inputs": {"unet_name": low_unet, "weight_dtype": "default"}},
+        "3": {"class_type": "CLIPLoader",
+              "inputs": {"clip_name": MODELS["wan_clip"], "type": "wan"}},
+        "4": {"class_type": "VAELoader",
+              "inputs": {"vae_name": MODELS["wan_vae"]}},
+        "5": {"class_type": "ModelSamplingSD3",
+              "inputs": {"model": ["1", 0], "shift": shift}},
+        "6": {"class_type": "ModelSamplingSD3",
+              "inputs": {"model": ["2", 0], "shift": shift}},
+    }
+    wf.update(latent_source)
+    if cond_from_latent_node:
+        pos, neg, lat = ["10", 0], ["10", 1], ["10", 2]
+    else:
+        pos, neg, lat = ["20", 0], ["21", 0], ["22", 0]
+    split = max(1, int(steps) // 2)
+    wf["11"] = {"class_type": "KSamplerAdvanced",
+                "inputs": {"model": ["5", 0], "positive": pos,
+                           "negative": neg, "latent_image": lat,
+                           "add_noise": "enable", "noise_seed": seed,
+                           "steps": steps, "cfg": cfg,
+                           "sampler_name": _WAN_SAMPLER,
+                           "scheduler": _WAN_SCHEDULER,
+                           "start_at_step": 0, "end_at_step": split,
+                           "return_with_leftover_noise": "enable"}}
+    wf["12"] = {"class_type": "KSamplerAdvanced",
+                "inputs": {"model": ["6", 0], "positive": pos,
+                           "negative": neg, "latent_image": ["11", 0],
+                           "add_noise": "disable", "noise_seed": seed,
+                           "steps": steps, "cfg": cfg,
+                           "sampler_name": _WAN_SAMPLER,
+                           "scheduler": _WAN_SCHEDULER,
+                           "start_at_step": split, "end_at_step": steps,
+                           "return_with_leftover_noise": "disable"}}
+    wf["13"] = {"class_type": "VAEDecode",
+                "inputs": {"samples": ["12", 0], "vae": ["4", 0]}}
+    wf["14"] = {"class_type": "VHS_VideoCombine",
+                "inputs": {"images": ["13", 0], "frame_rate": fps,
+                           "loop_count": 0, "filename_prefix": filename_prefix,
+                           "format": "video/h264-mp4", "pingpong": False,
+                           "save_output": True}}
+    return wf
+
+
+def image_to_video(
+    image: str,
+    prompt: str,
+    *,
+    negative_prompt: str = DEFAULT_NEGATIVE,
+    seed: int = 0,
+    steps: int = 20,
+    cfg: float = 5.0,
+    width: int = 832,
+    height: int = 480,
+    frames: int = 81,
+    fps: float = 16.0,
+    shift: float = _WAN_SHIFT,
+    filename_prefix: str = "myai/i2v",
+) -> dict:
+    """Animate a photo (Wan 2.2 14B I2V, FP8, dual high/low-noise pass).
+
+    image: ComfyUI input filename (from gpu_client.upload_image).
+    frames is normalized to Wan's 4n+1 grid (81 frames = ~5s at 16fps).
+    """
+    frames = _frames_4n1(frames)
+    latent_source = {
+        "7": {"class_type": "LoadImage", "inputs": {"image": image}},
+        "8": {"class_type": "CLIPTextEncode",
+              "inputs": {"clip": ["3", 0], "text": prompt}},
+        "9": {"class_type": "CLIPTextEncode",
+              "inputs": {"clip": ["3", 0], "text": negative_prompt}},
+        "10": {"class_type": "WanImageToVideo",
+               "inputs": {"positive": ["8", 0], "negative": ["9", 0],
+                          "vae": ["4", 0], "width": int(width),
+                          "height": int(height), "length": frames,
+                          "batch_size": 1, "start_image": ["7", 0]}},
+    }
+    return _wan_dual_pass(
+        high_unet=MODELS["wan_i2v_high"], low_unet=MODELS["wan_i2v_low"],
+        latent_source=latent_source, prompt=prompt,
+        negative_prompt=negative_prompt, seed=seed, steps=steps, cfg=cfg,
+        shift=shift, fps=fps, filename_prefix=filename_prefix,
+        cond_from_latent_node=True)
+
+
+def text_to_video(
+    prompt: str,
+    *,
+    negative_prompt: str = DEFAULT_NEGATIVE,
+    seed: int = 0,
+    steps: int = 20,
+    cfg: float = 5.0,
+    width: int = 832,
+    height: int = 480,
+    frames: int = 81,
+    fps: float = 16.0,
+    shift: float = _WAN_SHIFT,
+    filename_prefix: str = "myai/t2v",
+) -> dict:
+    """Generate video from text alone (Wan 2.2 14B T2V, FP8 dual-pass)."""
+    frames = _frames_4n1(frames)
+    latent_source = {
+        "20": {"class_type": "CLIPTextEncode",
+               "inputs": {"clip": ["3", 0], "text": prompt}},
+        "21": {"class_type": "CLIPTextEncode",
+               "inputs": {"clip": ["3", 0], "text": negative_prompt}},
+        "22": {"class_type": "EmptyHunyuanLatentVideo",
+               "inputs": {"width": int(width), "height": int(height),
+                          "length": frames, "batch_size": 1}},
+    }
+    return _wan_dual_pass(
+        high_unet=MODELS["wan_t2v_high"], low_unet=MODELS["wan_t2v_low"],
+        latent_source=latent_source, prompt=prompt,
+        negative_prompt=negative_prompt, seed=seed, steps=steps, cfg=cfg,
+        shift=shift, fps=fps, filename_prefix=filename_prefix,
+        cond_from_latent_node=False)
+
+
+# --------------------------------------------------------- model replace ----
+
+def video_replace_model(
+    source_video: str,
+    reference_image: str,
+    prompt: str = "",
+    *,
+    negative_prompt: str = DEFAULT_NEGATIVE,
+    seed: int = 0,
+    steps: int = 20,
+    cfg: float = 5.0,
+    width: int = 832,
+    height: int = 480,
+    frames: int = 81,
+    fps: float = 16.0,
+    denoise: float = 1.0,
+    reference_strength: float = 1.0,
+    shift: float = _WAN_SHIFT,
+    filename_prefix: str = "myai/replace",
+) -> dict:
+    """Swap the subject of a video using a reference photo (Wan VACE 14B).
+
+    VACE reference-to-video: the source video supplies motion, scene and
+    camera; the reference image supplies the subject's identity. The
+    prompt (optional) guides the swap in words — passed through exactly
+    as written. reference_strength is VACE's conditioning strength for
+    the reference/control inputs (1.0 = full).
+
+    source_video / reference_image: ComfyUI input filenames (from
+    gpu_client.upload_video / upload_image). frames caps how much of
+    the source video is processed (4n+1 grid).
+    """
+    frames = _frames_4n1(frames)
+    wf: dict = {
+        "1": {"class_type": "UNETLoader",
+              "inputs": {"unet_name": MODELS["vace_unet"],
+                         "weight_dtype": "default"}},
+        "2": {"class_type": "CLIPLoader",
+              "inputs": {"clip_name": MODELS["wan_clip"], "type": "wan"}},
+        "3": {"class_type": "VAELoader",
+              "inputs": {"vae_name": MODELS["wan_vae"]}},
+        "4": {"class_type": "ModelSamplingSD3",
+              "inputs": {"model": ["1", 0], "shift": shift}},
+        "5": {"class_type": "CLIPTextEncode",
+              "inputs": {"clip": ["2", 0], "text": prompt}},
+        "6": {"class_type": "CLIPTextEncode",
+              "inputs": {"clip": ["2", 0], "text": negative_prompt}},
+        "7": {"class_type": "VHS_LoadVideo",
+              "inputs": {"video": source_video, "force_rate": fps,
+                         "custom_width": 0, "custom_height": 0,
+                         "frame_load_cap": frames, "skip_first_frames": 0,
+                         "select_every_nth": 1, "format": "None"}},
+        "8": {"class_type": "LoadImage",
+              "inputs": {"image": reference_image}},
+        "9": {"class_type": "WanVaceToVideo",
+              "inputs": {"positive": ["5", 0], "negative": ["6", 0],
+                         "vae": ["3", 0], "width": int(width),
+                         "height": int(height), "length": frames,
+                         "batch_size": 1, "strength": reference_strength,
+                         "control_video": ["7", 0],
+                         "reference_image": ["8", 0]}},
+        "10": {"class_type": "KSampler",
+               "inputs": {"model": ["4", 0], "positive": ["9", 0],
+                          "negative": ["9", 1], "latent_image": ["9", 2],
+                          "seed": seed, "steps": steps, "cfg": cfg,
+                          "sampler_name": _WAN_SAMPLER,
+                          "scheduler": _WAN_SCHEDULER, "denoise": denoise}},
+        "11": {"class_type": "VAEDecode",
+               "inputs": {"samples": ["10", 0], "vae": ["3", 0]}},
+        "12": {"class_type": "VHS_VideoCombine",
+               "inputs": {"images": ["11", 0], "frame_rate": fps,
+                          "loop_count": 0, "filename_prefix": filename_prefix,
+                          "format": "video/h264-mp4", "pingpong": False,
+                          "save_output": True}},
+    }
+    return wf
