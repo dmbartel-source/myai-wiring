@@ -282,7 +282,7 @@ GENERATE_OPTIONS = [
      "cost": "~$1.00/clip (pod time)",
      "description": ("Put a different model into an existing video via "
                      "Wan VACE on your own RunPod GPU. Pick the base "
-                     "video AND a reference photo of the new model. "
+                     "video AND a reference photo or video of the new model. "
                      "Needs the pod running."),
      "needs_media": "video",
      "needs_prompt": False,
@@ -787,7 +787,11 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
         vpath = safe_media_path(media_name)
         rpath = safe_media_path(p.get("ref_media_name") or "")
         if vpath is None or rpath is None:
-            raise RuntimeError("base video or reference photo disappeared")
+            raise RuntimeError("base video or reference disappeared")
+        if media_type(p.get("ref_media_name") or "") == "video":
+            # VACE conditions on a still image; take a frame of the
+            # reference video (same helper as Model Replace).
+            rpath = _ensure_photo_ref(rpath, jobdir)
         vup = gc.upload_video(vpath)
         iup = gc.upload_image(rpath)
         wf = gw.video_replace_model(
@@ -1947,18 +1951,21 @@ class StudioHandler(BaseHTTPRequestHandler):
             base_name = next((n for n in candidates
                               if n and media_type(n) == "video"), "")
             ref_images = list(body.get("reference_images") or [])
-            ref_name = ref_images[0] if ref_images else ""
+            ref_videos = list(body.get("reference_videos") or [])
+            ref_name = (ref_images[0] if ref_images else
+                        next((n for n in ref_videos
+                              if n and n != base_name), ""))
             if not base_name or safe_media_path(base_name) is None:
                 self._send_json({"error": "pick a base video"}, 400)
                 return
             if not ref_name or safe_media_path(ref_name) is None:
                 self._send_json(
-                    {"error": "pick a reference photo of the new model"},
-                    400)
+                    {"error": "pick a reference photo or video of the "
+                              "new model"}, 400)
                 return
-            if media_type(ref_name) != "image":
+            if media_type(ref_name) not in ("image", "video"):
                 self._send_json(
-                    {"error": "reference must be a photo"}, 400)
+                    {"error": "reference must be a photo or a video"}, 400)
                 return
             params["media_name"] = base_name
             params["ref_media_name"] = ref_name
