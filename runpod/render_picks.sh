@@ -31,14 +31,14 @@ grep -q 'default="gs"' "$DRIVER" || fail "build_avatar.py is not the gs-default 
 mkdir -p "$REFS" "$OUT"
 rm -f "$REFS"/*
 n=0
-for f in "$SRC"/v2_*; do
+for f in "$SRC"/v2_[0-9][0-9].*; do
   [ -f "$f" ] || continue
   n=$((n+1))
   cp "$f" "$REFS/$(basename "$f")"
   echo "ref $n: $f"
 done
 echo "picks found in ComfyUI/input: $n"
-[ "$n" -eq 16 ] || fail "expected 16 v2_* picks in $SRC, found $n — uploads not complete"
+[ "$n" -eq 16 ] || fail "expected 16 v2_NN picks in $SRC, found $n — uploads not complete"
 ls -la "$REFS"
 
 cd "$REPO" || exit 1
