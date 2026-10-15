@@ -876,6 +876,246 @@ def video_replace_model_scail(
     return wf
 
 
+def video_replace_model_scail_gap(
+    source_video: str,
+    reference_image: str,
+    prompt: str = "",
+    *,
+    negative_prompt: str = DEFAULT_NEGATIVE,
+    seed: int = 0,
+    steps: int = 24,
+    cfg: float = 5.0,
+    shift: float = 3.0,
+    width: int = 704,
+    height: int = 544,
+    frames: int = 0,
+    fps: float = 16.0,
+    mask_prompt: str = "person",
+    mask_threshold: float = 0.4,
+    ref_threshold: float = 0.5,
+    hero_prompt: str = "woman",
+    partner_prompt: str = "man",
+    hero_frame: int = 8,
+    lightx2v_strength: float = 0.0,
+    dpo_strength: float = 1.0,
+    relight_strength: float = 1.0,
+    pose_strength: float = 1.0,
+    sort_by: str = "left_to_right",
+    gap_swap: bool = False,
+    cache_id: str = "studio",
+    color_match: bool = True,
+    composite: bool = True,
+    composite_expand: int = 16,
+    composite_feather: int = 8,
+    seedvr2_resolution: int = 0,
+    filename_prefix: str = "myai/scail_replace_gap",
+) -> dict:
+    """SCAIL-2 replacement via the GAP pack's long-video orchestrator.
+
+    Alternative engine to video_replace_model_scail (A/B, Oct 15):
+    the community GAP node (GeekatplayStudio/wan-scail2-gap) does
+    the chunking, anchoring, scene-cut handling and per-chunk
+    character-prompt injection internally over the FULL video in
+    one workflow, and its Multi-Character Reference node builds
+    the canonical side-by-side composite reference the model was
+    trained with. Identity binding is by colour slot: character 1
+    (blue) is the leftmost tracked person under left_to_right
+    sort -- gap_swap flips the reference slots if the couple's
+    driving order is the other way around.
+
+    Her reference is the uploaded photo (SAM3-detected mask); his
+    reference is a real source frame with his own detected mask --
+    he is bound as himself, the same two-identity trick as the
+    hero reference in the hand-built graph. Sampling defaults are
+    the Studio quality profile (24 / cfg 5 / shift 3, distill LoRA
+    off): the pack's own docs warn turbo mode collapses
+    multi-identity binding. The union finish (source pixels only
+    outside both people) matches the Studio default.
+    """
+    base_prompt = prompt or (
+        "the woman from the reference image together with the man "
+        "from the source video, in close physical contact, both "
+        "fully visible throughout, photorealistic, natural skin "
+        "texture, consistent lighting")
+    if "{characters}" not in base_prompt:
+        base_prompt = base_prompt + " {characters}"
+    her_desc = ("the woman from the reference image, photorealistic, "
+                "natural skin texture, fully recognizable")
+    him_desc = ("the man from the source video, photorealistic, "
+                "natural skin texture, fully recognizable")
+    slot1, slot2 = (him_desc, her_desc) if gap_swap else (her_desc,
+                                                          him_desc)
+    character_prompts = f"1: {slot1}\n2: {slot2}"
+    wf = {
+        "1": {"class_type": "VHS_LoadVideo",
+              "inputs": {"video": source_video, "force_rate": float(fps),
+                         "custom_width": 0, "custom_height": 0,
+                         "frame_load_cap": int(frames),
+                         "skip_first_frames": 0, "select_every_nth": 1,
+                         "format": "AnimateDiff"}},
+        "2": {"class_type": "ImageScale",
+              "inputs": {"image": ["1", 0], "upscale_method": "lanczos",
+                         "width": int(width), "height": int(height),
+                         "crop": "disabled"}},
+        "3": {"class_type": "LoadImage",
+              "inputs": {"image": reference_image}},
+        "4": {"class_type": "UNETLoader",
+              "inputs": {"unet_name": MODELS["scail_unet"],
+                         "weight_dtype": "default"}},
+        "5": {"class_type": "LoraLoaderModelOnly",
+              "inputs": {"model": ["4", 0],
+                         "lora_name": MODELS["scail_lightx2v_lora"],
+                         "strength_model": float(lightx2v_strength)}},
+        "6": {"class_type": "LoraLoaderModelOnly",
+              "inputs": {"model": ["5", 0],
+                         "lora_name": MODELS["scail_dpo_lora"],
+                         "strength_model": float(dpo_strength)}},
+        "7": {"class_type": "ModelSamplingSD3",
+              "inputs": {"model": ["6", 0], "shift": float(shift)}},
+        "8": {"class_type": "CLIPLoader",
+              "inputs": {"clip_name": MODELS["wan_clip"], "type": "wan"}},
+        "11": {"class_type": "VAELoader",
+               "inputs": {"vae_name": MODELS["wan_vae"]}},
+        "12": {"class_type": "CheckpointLoaderSimple",
+               "inputs": {"ckpt_name": MODELS["sam3_ckpt"]}},
+        "13": {"class_type": "CLIPTextEncode",
+               "inputs": {"text": mask_prompt, "clip": ["12", 1]}},
+        "14": {"class_type": "SAM3_VideoTrack",
+               "inputs": {"images": ["2", 0], "model": ["12", 0],
+                          "conditioning": ["13", 0],
+                          "detection_threshold": float(mask_threshold),
+                          "max_objects": 4, "detect_interval": 1}},
+        "17": {"class_type": "SCAIL2ColoredMask",
+               "inputs": {"driving_track_data": ["14", 0],
+                          "object_indices": "", "sort_by": sort_by,
+                          "replacement_mode": True}},
+        # Reference side: her photo + his real frame, each with a
+        # SAM3-detected mask, composited by the GAP node into the
+        # canonical side-by-side primary reference.
+        "30": {"class_type": "ImageFromBatch",
+               "inputs": {"image": ["2", 0],
+                          "batch_index": int(hero_frame), "length": 1}},
+        "32": {"class_type": "CLIPTextEncode",
+               "inputs": {"text": hero_prompt, "clip": ["12", 1]}},
+        "33": {"class_type": "SAM3_Detect",
+               "inputs": {"model": ["12", 0], "image": ["3", 0],
+                          "conditioning": ["32", 0],
+                          "threshold": float(ref_threshold),
+                          "refine_iterations": 2,
+                          "individual_masks": False}},
+        "36": {"class_type": "CLIPTextEncode",
+               "inputs": {"text": partner_prompt, "clip": ["12", 1]}},
+        "37": {"class_type": "SAM3_Detect",
+               "inputs": {"model": ["12", 0], "image": ["30", 0],
+                          "conditioning": ["36", 0],
+                          "threshold": float(ref_threshold),
+                          "refine_iterations": 2,
+                          "individual_masks": False}},
+        "18": {"class_type": "CLIPVisionLoader",
+               "inputs": {"clip_name": MODELS["clip_vision_h"]}},
+    }
+    if relight_strength:
+        wf["51"] = {"class_type": "LoraLoaderModelOnly",
+                    "inputs": {"model": ["6", 0],
+                               "lora_name": MODELS["scail_relight_lora"],
+                               "strength_model": float(relight_strength)}}
+        wf["7"]["inputs"]["model"] = ["51", 0]
+    her = {"image": ["3", 0], "mask": ["33", 0]}
+    him = {"image": ["30", 0], "mask": ["37", 0]}
+    first, second = (him, her) if gap_swap else (her, him)
+    wf["70"] = {"class_type": "GAPMultiCharacterReference",
+                "inputs": {"width": int(width), "height": int(height),
+                           "replacement_mode": True,
+                           "individual_views": False,
+                           "image_1": first["image"],
+                           "mask_1": first["mask"],
+                           "image_2": second["image"],
+                           "mask_2": second["mask"]}}
+    wf["19"] = {"class_type": "CLIPVisionEncode",
+                "inputs": {"clip_vision": ["18", 0],
+                           "image": ["70", 2], "crop": "center"}}
+    wf["71"] = {"class_type": "GAPSCAIL2LongVideo",
+                "inputs": {
+                    "model": ["7", 0], "clip": ["8", 0],
+                    "vae": ["11", 0], "pose_video": ["2", 0],
+                    "pose_video_mask": ["17", 0],
+                    "reference_image": ["70", 0],
+                    "reference_image_mask": ["70", 1],
+                    "base_prompt": base_prompt,
+                    "negative_prompt": negative_prompt,
+                    "character_prompts": character_prompts,
+                    "prompt_schedule": "",
+                    "width": int(width), "height": int(height),
+                    "chunk_length": 81, "overlap": 5,
+                    "replacement_mode": True,
+                    "pose_strength": float(pose_strength),
+                    "pose_start": 0.0, "pose_end": 1.0,
+                    "seed": int(seed), "steps": int(steps),
+                    "cfg": float(cfg), "sampler_name": _WAN_SAMPLER,
+                    "scheduler": _WAN_SCHEDULER, "color_match": "lab",
+                    "auto_character_prompts": True,
+                    "presence_threshold": 0.001,
+                    "cache_mode": "new render", "cache_id": cache_id,
+                    "chunk_rerender": "", "rerender_cascade": False,
+                    "detect_scene_cuts": True,
+                    "scene_cut_threshold": 0.3,
+                    "vae_decode": "standard",
+                    "pad_to_source_length": True,
+                    "clip_vision_output": ["19", 0],
+                    "character_count": ["70", 3]}}
+    gen = ["71", 0]
+    if color_match:
+        wf["35"] = {"class_type": "ColorMatch",
+                    "inputs": {"image_ref": ["2", 0],
+                               "image_target": gen,
+                               "method": "reinhard", "strength": 1.0,
+                               "multithread": True}}
+        gen = ["35", 0]
+    final = gen
+    if composite:
+        wf["25"] = {"class_type": "SAM3_TrackToMask",
+                    "inputs": {"track_data": ["14", 0],
+                               "object_indices": ""}}
+        wf["26"] = {"class_type": "GrowMask",
+                    "inputs": {"mask": ["25", 0],
+                               "expand": int(composite_expand),
+                               "tapered_corners": True}}
+        wf["27"] = {"class_type": "FeatherMask",
+                    "inputs": {"mask": ["26", 0],
+                               "left": int(composite_feather),
+                               "top": int(composite_feather),
+                               "right": int(composite_feather),
+                               "bottom": int(composite_feather)}}
+        wf["28"] = {"class_type": "ImageCompositeMasked",
+                    "inputs": {"destination": ["2", 0],
+                               "source": gen, "x": 0, "y": 0,
+                               "resize_source": False,
+                               "mask": ["27", 0]}}
+        final = ["28", 0]
+    if seedvr2_resolution:
+        wf["60"] = {"class_type": "SeedVR2LoadDiTModel",
+                    "inputs": {"model": MODELS["seedvr2_dit"],
+                               "device": "cuda:0"}}
+        wf["61"] = {"class_type": "SeedVR2LoadVAEModel",
+                    "inputs": {"model": MODELS["seedvr2_vae"],
+                               "device": "cuda:0"}}
+        wf["62"] = {"class_type": "SeedVR2VideoUpscaler",
+                    "inputs": {"image": final, "dit": ["60", 0],
+                               "vae": ["61", 0], "seed": int(seed),
+                               "resolution": int(seedvr2_resolution),
+                               "max_resolution": 0, "batch_size": 21,
+                               "uniform_batch_size": True,
+                               "color_correction": "lab"}}
+        final = ["62", 0]
+    wf["29"] = {"class_type": "VHS_VideoCombine",
+                "inputs": {"images": final, "frame_rate": float(fps),
+                           "loop_count": 0,
+                           "filename_prefix": filename_prefix,
+                           "format": "video/h264-mp4", "pingpong": False,
+                           "save_output": True}}
+    return wf
+
+
 def video_seedvr2_upscale(
     source_video: str,
     *,
