@@ -1079,6 +1079,13 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
             scail_seedvr2 = (bool(p.get("seedvr2"))
                              and p.get("seedvr2")
                              not in (False, 0, "false"))
+            # Person LoRA (skswoman, trained on her own frames):
+            # rides in sk so the single-pass AND chunked paths both
+            # pick it up; the GAP call passes it by name below.
+            scail_person = (1.0 if p.get("person_lora")
+                            and p.get("person_lora")
+                            not in (False, 0, "false") else 0.0)
+            sk["person_lora_strength"] = scail_person
             # The prompt must describe the post-replacement scene
             # with BOTH people and their interaction (official
             # SCAIL-2 prompt semantics); the shared default only
@@ -1110,6 +1117,7 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                     composite_expand=int(sk.get("composite_expand", 16)),
                     composite_feather=int(sk.get("composite_feather", 8)),
                     gap_swap=bool(p.get("gap_swap")),
+                    person_lora_strength=scail_person,
                     cache_id=f"studio-{job_id}",
                     seedvr2_resolution=(1024 if scail_seedvr2 else 0))
                 gap_timeout = max(3600.0, total_frames * 4.0)
@@ -2329,7 +2337,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                   "mask_threshold", "contact_reach", "contact_pad",
                   "partner_threshold", "engine", "ref_threshold",
                   "composite_expand", "composite_feather", "composite",
-                  "seedvr2", "gap_swap")
+                  "seedvr2", "gap_swap", "person_lora")
                  if k in raw}
         media = body.get("media") or ""
         params = {"prompt": prompt, **knobs}
