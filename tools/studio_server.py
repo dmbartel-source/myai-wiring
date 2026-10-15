@@ -956,6 +956,7 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                 phase="uploading to your GPU pod")
     scail_chunks = None   # gpu_replace SCAIL: long-video chunk plan
     scail_seedvr2 = False  # gpu_replace SCAIL: SeedVR2 detail finish
+    use_gap = False        # gpu_replace: GAP orchestrator engine
     gpu_face_ref = None   # gpu_replace: face-lock source image
     gpu_src_video = None  # gpu_replace: original video (audio source)
     if gen_id == "gpu_image_edit":
@@ -1031,7 +1032,8 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
         # page sends none, and must not silently land on the VACE
         # fallback -- pod-verified Oct 15, two VACE runs killed).
         engine = (p.get("engine") or "scail").strip().lower()
-        if engine == "scail":
+        if engine in ("scail", "gap"):
+            use_gap = engine == "gap"
             # SCAIL-2 end-to-end replacement: ONE reference image (the
             # first), not the tiled sheet -- its coloured-mask identity
             # binding wants a single clean subject. Works larger than
@@ -1089,7 +1091,29 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                 "lighting")
             total_frames = int(float(info.get("duration") or 0.0)
                                * 16.0)
-            if total_frames > 81:
+            if use_gap:
+                # GAP orchestrator: chunks internally over the
+                # full video in ONE workflow (no server chunk
+                # plan); the run timeout scales with length.
+                wf = gw.video_replace_model_scail_gap(
+                    vup, iup, scail_prompt,
+                    mask_prompt=(p.get("mask_prompt") or "person"),
+                    mask_threshold=_f("mask_threshold", 0.4),
+                    width=int(sk["width"]), height=int(sk["height"]),
+                    frames=total_frames,
+                    seed=int(sk.get("seed", 0)),
+                    steps=int(sk.get("steps", 24)),
+                    cfg=float(sk.get("cfg", 5.0)),
+                    shift=float(sk.get("shift", 3.0)),
+                    lightx2v_strength=float(
+                        sk.get("lightx2v_strength", 0.0)),
+                    composite_expand=int(sk.get("composite_expand", 16)),
+                    composite_feather=int(sk.get("composite_feather", 8)),
+                    gap_swap=bool(p.get("gap_swap")),
+                    cache_id=f"studio-{job_id}",
+                    seedvr2_resolution=(1024 if scail_seedvr2 else 0))
+                gap_timeout = max(3600.0, total_frames * 4.0)
+            elif total_frames > 81:
                 # Long video: 81-frame chunks chained by 5-frame
                 # anchors (see _run_scail_chunks); the single-pass
                 # workflow is built per chunk there instead.
@@ -1120,6 +1144,8 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
             protect_contact=p.get("protect_contact", True)
                 not in (False, 0, "false"), **knobs)
         suffix, timeout_s = "gpu_replace", 3600.0
+        if use_gap:
+            timeout_s = gap_timeout
     else:
         raise RuntimeError(f"unknown gpu generate option {gen_id!r}")
 
@@ -2303,7 +2329,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                   "mask_threshold", "contact_reach", "contact_pad",
                   "partner_threshold", "engine", "ref_threshold",
                   "composite_expand", "composite_feather", "composite",
-                  "seedvr2")
+                  "seedvr2", "gap_swap")
                  if k in raw}
         media = body.get("media") or ""
         params = {"prompt": prompt, **knobs}
