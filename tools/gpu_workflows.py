@@ -326,6 +326,8 @@ def video_replace_model(
     mask_prompt: str = "woman",
     mask_expand: int = 20,
     mask_threshold: float = 0.5,
+    composite: bool = True,
+    composite_feather: int = 8,
     shift: float = _WAN_SHIFT,
     filename_prefix: str = "myai/replace",
 ) -> dict:
@@ -346,6 +348,11 @@ def video_replace_model(
        mask's shape/motion and the untouched surroundings.
     4. TrimVideoLatent removes the reference segment after sampling,
        so the output is exactly `frames` long with no reference intro.
+    5. COMPOSITE (default on): the regenerated frames are pasted back
+       over the ORIGINAL source frames through the feathered mask, so
+       everything outside the performer — room, other people, camera —
+       is the original footage pixel for pixel, not a re-render. Only
+       her region is synthesized (those pixels exist nowhere else).
 
     source_video / reference_image: ComfyUI input filenames (from
     gpu_client.upload_video / upload_image). frames caps how much of
@@ -429,5 +436,18 @@ def video_replace_model(
                           "format": "video/h264-mp4", "pingpong": False,
                           "save_output": True}},
     }
+    if composite:
+        wf["23"] = {"class_type": "FeatherMask",
+                    "inputs": {"mask": ["14", 0],
+                               "left": int(composite_feather),
+                               "top": int(composite_feather),
+                               "right": int(composite_feather),
+                               "bottom": int(composite_feather)}}
+        wf["24"] = {"class_type": "ImageCompositeMasked",
+                    "inputs": {"destination": ["9", 0],
+                               "source": ["21", 0], "x": 0, "y": 0,
+                               "resize_source": False,
+                               "mask": ["23", 0]}}
+        wf["22"]["inputs"]["images"] = ["24", 0]
     return wf
 
