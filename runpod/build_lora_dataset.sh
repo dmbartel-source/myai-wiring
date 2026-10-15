@@ -24,9 +24,21 @@ TUNER=/workspace/SCAIL-2-Tuner
 PY=$TUNER/.venv/bin/python
 DIT=/workspace/ComfyUI/models/diffusion_models/wan2.1_14B_SCAIL_2_fp16.safetensors
 VAE=/workspace/ComfyUI/models/vae/wan_2.1_vae.safetensors
-CLIP=/workspace/ComfyUI/models/clip_vision/clip_vision_h.safetensors
+# The tuner's CLIP loader is strict and expects the NATIVE Wan
+# checkpoint (full XLM-Roberta CLIP, visual.+textual. keys). The
+# ComfyUI clip_vision_h.safetensors (HF-style vision_model.* keys,
+# vision tower only) fails with a state_dict RuntimeError -- proven
+# in the first smoke run Oct 15. Native file per musubi's Wan docs:
+CLIP=/workspace/trainer_models/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
 T5=/workspace/ComfyUI/models/text_encoders/umt5-xxl-enc-bf16.safetensors
 SRC=/workspace/ComfyUI/input/4707.mp4
+
+echo "== PREP native CLIP checkpoint for the tuner (~4.4 GB)"
+mkdir -p /workspace/trainer_models
+hf download Wan-AI/Wan2.1-I2V-14B-720P \
+  models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth \
+  --local-dir /workspace/trainer_models
+df -h /workspace | tail -1
 
 echo "== SMOKE 1/3 dummy dataset"
 $PY -m musubi_tuner.scail2_create_dummy_dataset \
