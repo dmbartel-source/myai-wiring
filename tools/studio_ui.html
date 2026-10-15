@@ -1251,7 +1251,7 @@ $("#mr-go").addEventListener("click", async ()=>{
 });
 
 /* ---------- GPU replace model (VACE on David's pod) ---------- */
-let grBase = null, grRef = null;
+let grBase = null, grRefs = [];
 function showGpuReplace(){
   ["#gen-list","#gen-confirm","#gen-result","#gen-longvideo","#gen-restyle","#gen-modelreplace"].forEach(x=>$(x).classList.add("hidden"));
   const p = $("#gen-gpureplace");
@@ -1266,16 +1266,23 @@ function showGpuReplace(){
     bs.querySelector("#gr-base-pick").addEventListener("click", ()=> pickGenMedia("video", m=>{ grBase = m; showGpuReplace(); }));
   }
   const rs = $("#gr-ref-sel");
-  if(grRef){
-    rs.innerHTML = `<div class="selbar"><img src="${grRef.thumb}"><div><b>${esc(grRef.name)}</b></div><button class="chipbtn" id="gr-ref-change">Change</button></div>`;
-    rs.querySelector("#gr-ref-change").addEventListener("click", ()=> pickGenMedia("any", m=>{ grRef = m; showGpuReplace(); }));
-  }else{
-    rs.innerHTML = `<button class="bigbtn ghost" id="gr-ref-pick">Pick a reference photo or video</button>`;
-    rs.querySelector("#gr-ref-pick").addEventListener("click", ()=> pickGenMedia("any", m=>{ grRef = m; showGpuReplace(); }));
+  const hasVideo = grRefs.some(m=>m.type==="video");
+  let html = grRefs.map((m,i)=>`<div class="selbar"><img src="${m.thumb}"><div><b>${esc(m.name)}</b></div><button class="chipbtn" data-rm="${i}">Remove</button></div>`).join("");
+  if(!hasVideo && grRefs.length < 4){
+    html += `<button class="bigbtn ghost" id="gr-ref-add">${grRefs.length ? "Add another reference photo" : "Pick reference photo(s) or a video"}</button>`;
   }
+  rs.innerHTML = html;
+  rs.querySelectorAll("[data-rm]").forEach(b=> b.addEventListener("click", ()=>{ grRefs.splice(+b.dataset.rm, 1); showGpuReplace(); }));
+  const add = rs.querySelector("#gr-ref-add");
+  if(add) add.addEventListener("click", ()=> pickGenMedia("any", m=>{
+    if(m.type==="video"){ grRefs = [m]; }
+    else if(!grRefs.some(x=>x.name===m.name)){ grRefs.push(m); }
+    showGpuReplace();
+  }));
   const c = $("#gr-cost");
   c.innerHTML = "Runs on <b>your own GPU pod</b> (Wan VACE): every frame is re-rendered with your model in place of the original — same scene, poses, motion and timing. Cost is pod time only (~$1/clip), and nothing is filtered or sent to a third party."
-    + (grRef && grRef.type==="video" ? " A still frame from your reference video will be used as the model image." : "")
+    + (hasVideo ? " A still frame from your reference video will be used as the model image." : "")
+    + (grRefs.length > 1 ? ` Your ${grRefs.length} photos are tiled into ONE reference sheet automatically — more angles of the same look = steadier identity. Best results: photos from the same shoot, with one sharp full-body shot.` : "")
     + " The pod must be running.";
 }
 $("#gr-back").addEventListener("click", ()=>{
@@ -1283,14 +1290,14 @@ $("#gr-back").addEventListener("click", ()=>{
 });
 $("#gr-go").addEventListener("click", async ()=>{
   if(!grBase){ alert("Pick a base video first."); return; }
-  if(!grRef){ alert("Pick a reference photo or video."); return; }
+  if(!grRefs.length){ alert("Pick at least one reference photo (or a video)."); return; }
   const box = $("#gen-result");
   box.classList.remove("hidden");
   box.innerHTML = `<div class="spinner"></div>`;
   try{
     const payload = {id:"gpu_replace", prompt:"", media:grBase.name,
-      reference_images: grRef.type==="image" ? [grRef.name] : [],
-      reference_videos: grRef.type==="video" ? [grRef.name] : []};
+      reference_images: grRefs.filter(m=>m.type==="image").map(m=>m.name),
+      reference_videos: grRefs.filter(m=>m.type==="video").map(m=>m.name)};
     const r = await api("/api/generate", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify(payload)});
     if(r.status==="needs_setup"){ box.innerHTML = `<div class="note">⚠️ ${esc(r.message)}</div>`; return; }
