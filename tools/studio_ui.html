@@ -222,6 +222,12 @@ input[type=range]{flex:1; min-width:120px; accent-color:var(--acc); height:36px;
         <label style="font-size:13px;color:var(--dim)">Video Length</label>
         <select id="gen-dur-sel" style="width:100%;margin-top:4px;padding:8px;border-radius:8px;background:var(--bg2);color:var(--fg);border:1px solid var(--line)"></select>
       </div>
+      <div id="gen-facelock-wrap" style="margin:8px 0">
+        <label style="font-size:14px;display:flex;gap:8px;align-items:center">
+          <input type="checkbox" id="gen-facelock" checked style="width:20px;height:20px">
+          🔒 Lock face to reference — after generating, put your photo's real face back in (true to reference, free)
+        </label>
+      </div>
       <div class="price" id="gen-confirm-cost"></div>
       <div class="desc" id="gen-confirm-desc" style="color:var(--dim);font-size:14px"></div>
       <div class="row">
@@ -279,6 +285,9 @@ input[type=range]{flex:1; min-width:120px; accent-color:var(--acc); height:36px;
       <div id="lv-chainmode" class="ctl-row"></div>
       <div class="ctl-row">
         <button class="chipbtn sel" id="lv-overlap" data-on="1">Overlap + crossfade (seamless joins)</button>
+      </div>
+      <div class="ctl-row">
+        <button class="chipbtn sel" id="lv-facelock" data-on="1">🔒 Lock face to reference photo (true to reference)</button>
       </div>
       <button class="bigbtn ghost" id="lv-beats-btn">📝 Preview story beats</button>
       <div id="lv-beats-list"></div>
@@ -819,6 +828,9 @@ $("#gen-confirm-yes").addEventListener("click", async ()=>{
     if(msel && msel.value) payload.venice_model = msel.value;
     if(dsel && dsel.value) payload.duration_s = parseFloat(dsel.value);
   }
+  // True-to-reference face lock (single-photo I2V only)
+  const fl = $("#gen-facelock");
+  if(fl && fl.checked && !refs) payload.face_lock = true;
   try{
     const r = await api("/api/generate", {method:"POST",
       headers:{"Content-Type":"application/json"},
@@ -1108,6 +1120,7 @@ $("#mr-go").addEventListener("click", async ()=>{
 
 /* ---------- long video ---------- */
 let lvTarget = 60, lvQuality = "standard", lvChainMode = "lastframe", lvOverlap = true;
+let lvFaceLock = true;
 let lvBeats = null, lvRefMedia = null;
 
 function lvClipLen(){
@@ -1183,6 +1196,11 @@ function showLongVideo(){
     ov.classList.toggle("sel", lvOverlap);
     ov.onclick = ()=>{ lvOverlap = !lvOverlap; ov.classList.toggle("sel", lvOverlap);
       ov.dataset.on = lvOverlap?"1":"0"; lvBeats = null; $("#lv-beats-list").innerHTML=""; lvCost(); };
+    // face lock toggle (true-to-reference)
+    const flk = $("#lv-facelock");
+    flk.classList.toggle("sel", lvFaceLock);
+    flk.onclick = ()=>{ lvFaceLock = !lvFaceLock; flk.classList.toggle("sel", lvFaceLock);
+      flk.dataset.on = lvFaceLock?"1":"0"; };
     lvCost();
   });
 }
@@ -1228,7 +1246,8 @@ $("#lv-go").addEventListener("click", async ()=>{
       headers:{"Content-Type":"application/json"},
       body: JSON.stringify({media:lvRefMedia.name, prompt, beats,
         target_duration_s:lvTarget, chain_mode:lvChainMode,
-        quality:lvQuality, overlap_s: lvOverlap?1.0:0.0})});
+        quality:lvQuality, overlap_s: lvOverlap?1.0:0.0,
+        face_lock: lvFaceLock})});
     if(r.status==="needs_setup"){ box.innerHTML = `<div class="note">⚠️ ${esc(r.message)}</div>`; return; }
     show("result");
     $("#result-body").innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">Building <b>${r.n_clips} clips</b>…<br>Estimated <b>${esc(r.estimate||"")}</b></p><div class="phase-line" id="job-phase"></div>`;
