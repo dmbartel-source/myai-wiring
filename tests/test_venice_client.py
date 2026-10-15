@@ -173,3 +173,9 @@ def test_submit_answers_consent_challenge(tmp_path):
     assert job.request_id == "after-consent"
     assert calls["n"] == 2
     assert "Consent attestation:" in captured["payload"]["prompt"]
+    # The resubmit must carry Venice's structured consent object:
+    # exactly the three confirmations, all true, nothing extra.
+    consents = captured["payload"]["consents"]["seedance"]
+    assert consents == {"confirmed_terms_and_privacy": True,
+                        "confirmed_legal_right": True,
+                        "confirmed_screening_acknowledged": True}
