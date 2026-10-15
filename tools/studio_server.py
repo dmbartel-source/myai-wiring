@@ -905,11 +905,15 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
             # the source: 32-aligned, ~704 wide, aspect preserved.
             iup = gc.upload_image(ref_paths[0])
             sk = dict(knobs)
-            # SCAIL-2 v2: the builder's composite is a UNION finish
-            # (source pixels only outside BOTH tracked people), which
-            # never cuts across a body or the contact zone, so it
-            # stays at the builder default (on). The v1 single-mask
-            # composite that drew a border around her is gone.
+            # SCAIL-2 finish: NO post-composite. David's judged v2
+            # run (pod 7a01f535) still showed a border around her
+            # with the union composite -- any paste edge reads as a
+            # cutout where the generated person's local lighting
+            # meets the source background, and the research sweep's
+            # established two-person workflow likewise ships the raw
+            # output. Explicit composite=true still re-enables the
+            # union finish for a locked-off shot that needs it.
+            sk.setdefault("composite", False)
             if info.get("width"):
                 sw, sh = int(info["width"]), int(info["height"])
                 tw = 704 if sw <= 1408 else (sw // 32) * 32
