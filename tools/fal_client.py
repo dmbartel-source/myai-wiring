@@ -410,6 +410,24 @@ def download_to_file(
     """
     import tempfile
 
+    # file:// URLs (Venice binary responses saved locally) bypass the egress gate
+    if url.startswith("file://"):
+        import shutil
+        src = url[7:]
+        fd, tmp = tempfile.mkstemp(prefix=".dl-",
+                                    dir=os.path.dirname(dest_path) or ".")
+        os.close(fd)
+        try:
+            shutil.copy2(src, tmp)
+            os.replace(tmp, dest_path)
+        except BaseException:
+            try: os.remove(tmp)
+            except OSError: pass
+            raise
+        try: os.remove(src)
+        except OSError: pass
+        return dest_path
+
     req = urllib.request.Request(url, headers={"User-Agent": "myai-wiring/1.0"})
     try:
         with net.gated_urlopen(req, timeout=120, opener=opener) as resp:
