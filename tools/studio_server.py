@@ -654,6 +654,32 @@ def _ensure_photo_ref(ref_path: str, jobdir: str) -> str:
     return out
 
 
+
+def _ref_sheet(paths: list, out_path: str, cell: int = 896) -> str:
+    """Tile 2-4 reference photos into ONE composite reference image.
+
+    VACE conditions on a single reference image. A sheet of several
+    consistent photos (face close-up, full body, side view) gives the
+    model more identity evidence than any one shot and measurably
+    reduces drift when the source video changes angle. Each photo is
+    letterboxed into its cell (never cropped or stretched).
+    """
+    if Image is None:
+        raise RuntimeError("PIL not available for the reference sheet")
+    import math as _math
+    n = len(paths)
+    cols = 2 if n <= 4 else 3
+    rows = _math.ceil(n / cols)
+    sheet = Image.new("RGB", (cols * cell, rows * cell), (24, 24, 24))
+    for i, pth in enumerate(paths):
+        im = Image.open(pth).convert("RGB")
+        im.thumbnail((cell, cell))
+        x = (i % cols) * cell + (cell - im.width) // 2
+        y = (i // cols) * cell + (cell - im.height) // 2
+        sheet.paste(im, (x, y))
+    sheet.save(out_path, "JPEG", quality=92)
+    return out_path
+
 def _mux_audio(silent_video: str, audio_source: str, out_path: str) -> str:
     """Copy silent_video's picture + audio_source's audio into out_path.
 
@@ -785,18 +811,39 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
         suffix, timeout_s = "gpu_t2v", 3600.0
     elif gen_id == "gpu_replace":
         vpath = safe_media_path(media_name)
-        rpath = safe_media_path(p.get("ref_media_name") or "")
-        if vpath is None or rpath is None:
-            raise RuntimeError("base video or reference disappeared")
-        if media_type(p.get("ref_media_name") or "") == "video":
-            # VACE conditions on a still image; take a frame of the
-            # reference video (same helper as Model Replace).
-            rpath = _ensure_photo_ref(rpath, jobdir)
+        if vpath is None:
+            raise RuntimeError("base video disappeared")
+        ref_names = list(p.get("ref_media_names")
+                         or [p.get("ref_media_name") or ""])
+        ref_paths = []
+        for rn in ref_names:
+            rp = safe_media_path(rn)
+            if rp is None:
+                raise RuntimeError("a reference file disappeared")
+            if media_type(rn) == "video":
+                # VACE conditions on a still image; take a frame of
+                # the reference video (same helper as Model Replace).
+                rp = _ensure_photo_ref(rp, jobdir)
+            ref_paths.append(rp)
+        if len(ref_paths) > 1:
+            rpath = _ref_sheet(ref_paths,
+                               os.path.join(jobdir, "_ref_sheet.jpg"))
+        else:
+            rpath = ref_paths[0]
+        knobs = dict(video_knobs)
+        if "frames" not in p:
+            # Cover the WHOLE clip, not the 81-frame (~5s) workflow
+            # default: derive the frame count from the real duration
+            # (4n+1 grid), capped per single VACE pass.
+            dur = float(_probe_video_info(vpath).get("duration") or 0.0)
+            if dur > 0:
+                raw = int(dur * float(knobs.get("fps", 16.0)))
+                knobs["frames"] = max(17, min(321, 4 * round((raw - 1) / 4) + 1))
         vup = gc.upload_video(vpath)
         iup = gc.upload_image(rpath)
         wf = gw.video_replace_model(
             vup, iup, p.get("prompt", ""),
-            reference_strength=_f("reference_strength", 1.0), **video_knobs)
+            reference_strength=_f("reference_strength", 1.0), **knobs)
         suffix, timeout_s = "gpu_replace", 3600.0
     else:
         raise RuntimeError(f"unknown gpu generate option {gen_id!r}")
@@ -1951,24 +1998,29 @@ class StudioHandler(BaseHTTPRequestHandler):
             base_name = next((n for n in candidates
                               if n and media_type(n) == "video"), "")
             ref_images = list(body.get("reference_images") or [])
-            ref_videos = list(body.get("reference_videos") or [])
-            ref_name = (ref_images[0] if ref_images else
-                        next((n for n in ref_videos
-                              if n and n != base_name), ""))
+            ref_videos = [n for n in (body.get("reference_videos") or [])
+                          if n and n != base_name]
+            # Up to 4 reference photos (tiled into one sheet on the
+            # pod path) OR a single reference video (frame-extracted).
+            ref_names = ref_images[:4] if ref_images else ref_videos[:1]
             if not base_name or safe_media_path(base_name) is None:
                 self._send_json({"error": "pick a base video"}, 400)
                 return
-            if not ref_name or safe_media_path(ref_name) is None:
+            if not ref_names or any(safe_media_path(n) is None
+                                    for n in ref_names):
                 self._send_json(
-                    {"error": "pick a reference photo or video of the "
-                              "new model"}, 400)
+                    {"error": "pick reference photo(s) or a video of "
+                              "the new model"}, 400)
                 return
-            if media_type(ref_name) not in ("image", "video"):
+            if any(media_type(n) not in ("image", "video")
+                   for n in ref_names):
                 self._send_json(
-                    {"error": "reference must be a photo or a video"}, 400)
+                    {"error": "references must be photos or a video"}, 400)
                 return
+            ref_name = ref_names[0]
             params["media_name"] = base_name
             params["ref_media_name"] = ref_name
+            params["ref_media_names"] = ref_names
             job_media = base_name
         else:  # gpu_image_edit / gpu_i2v: one reference image
             if safe_media_path(media) is None:
