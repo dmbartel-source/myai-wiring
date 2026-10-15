@@ -383,6 +383,47 @@ def test_video_replace_model_scail_seedvr2_finish():
     assert wf["29"]["inputs"]["images"] == ["62", 0]
 
 
+def test_video_replace_model_scail_gap_graph():
+    wf = gw.video_replace_model_scail_gap("v.mp4", "r.jpg",
+                                          cache_id="job-9")
+    assert_links_valid(wf)
+    orch = wf["71"]
+    assert orch["class_type"] == "GAPSCAIL2LongVideo"
+    assert orch["inputs"]["pose_video"] == ["2", 0]
+    assert orch["inputs"]["pose_video_mask"] == ["17", 0]
+    assert orch["inputs"]["reference_image"] == ["70", 0]
+    assert orch["inputs"]["reference_image_mask"] == ["70", 1]
+    assert orch["inputs"]["clip_vision_output"] == ["19", 0]
+    assert orch["inputs"]["character_count"] == ["70", 3]
+    assert orch["inputs"]["cache_id"] == "job-9"
+    assert orch["inputs"]["steps"] == 24
+    assert orch["inputs"]["cfg"] == 5.0
+    assert "{characters}" in orch["inputs"]["base_prompt"]
+    lines = orch["inputs"]["character_prompts"].splitlines()
+    assert lines[0].startswith("1: the woman")
+    assert lines[1].startswith("2: the man")
+    mcr = wf["70"]
+    assert mcr["class_type"] == "GAPMultiCharacterReference"
+    assert mcr["inputs"]["image_1"] == ["3", 0]
+    assert mcr["inputs"]["mask_1"] == ["33", 0]
+    assert mcr["inputs"]["image_2"] == ["30", 0]
+    assert mcr["inputs"]["mask_2"] == ["37", 0]
+    # CLIP vision encodes the composite primary, not the raw photo.
+    assert wf["19"]["inputs"]["image"] == ["70", 2]
+    # Union finish over the orchestrator output.
+    assert wf["29"]["inputs"]["images"] == ["28", 0]
+    assert wf["28"]["inputs"]["source"] == ["35", 0]
+
+
+def test_video_replace_model_scail_gap_swap():
+    wf = gw.video_replace_model_scail_gap("v.mp4", "r.jpg", gap_swap=True)
+    assert wf["70"]["inputs"]["image_1"] == ["30", 0]
+    assert wf["70"]["inputs"]["image_2"] == ["3", 0]
+    lines = wf["71"]["inputs"]["character_prompts"].splitlines()
+    assert lines[0].startswith("1: the man")
+    assert lines[1].startswith("2: the woman")
+
+
 def test_video_seedvr2_upscale_graph():
     wf = gw.video_seedvr2_upscale("v.mp4", resolution=720, fps=24.0)
     assert_links_valid(wf)
