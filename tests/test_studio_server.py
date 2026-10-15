@@ -562,3 +562,14 @@ def test_chunk_bounds_cover_full_duration():
     assert ss._chunk_bounds(110.0, 110.0) == [(0.0, 110.0)]
     total = sum(length for _, length in ss._chunk_bounds(1000.0, 110.0))
     assert abs(total - 1000.0) < 0.01
+
+
+def test_even_bounds_no_runt_tail():
+    b = ss._even_bounds(219.0, 14.0)
+    assert len(b) == 16
+    assert all(length <= 14.0 and length >= 2.0 for _, length in b)
+    assert abs(sum(length for _, length in b) - 219.0) < 0.1
+    # The case greedy chunking ruins: 15.5s must be 2 x 7.75, not 14+1.5
+    b = ss._even_bounds(15.5, 14.0)
+    assert len(b) == 2 and all(length >= 2.0 for _, length in b)
+    assert ss._even_bounds(10.0, 14.0) == [(0.0, 10.0)]
