@@ -284,6 +284,11 @@ def test_video_replace_model_scail_graph():
     assert wf["34"]["class_type"] == "ImageCompositeMasked"
     assert wf["34"]["inputs"]["destination"] == ["30", 0]
     assert wf["33"]["inputs"]["image"] == ["30", 0]
+    # Colour finish: generated frames are Reinhard-matched to the
+    # source before the composite consumes them.
+    assert wf["35"]["class_type"] == "ColorMatch"
+    assert wf["35"]["inputs"]["image_target"] == ["24", 0]
+    assert wf["28"]["inputs"]["source"] == ["35", 0]
     # SAM3 conditioning must come from the SAM3 checkpoint's own CLIP
     # output (node 12, slot 1) -- feeding it UMT5 (node 8) crashes the
     # track with a matmul shape error (pod-verified Oct 15).
@@ -314,4 +319,5 @@ def test_video_replace_model_scail_graph():
 def test_video_replace_model_scail_no_composite():
     wf = gw.video_replace_model_scail("v.mp4", "r.jpg", composite=False)
     assert "28" not in wf
-    assert wf["29"]["inputs"]["images"] == ["24", 0]
+    # No composite -- but the colour finish still applies.
+    assert wf["29"]["inputs"]["images"] == ["35", 0]
