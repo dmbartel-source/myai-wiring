@@ -905,6 +905,14 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
             # the source: 32-aligned, ~704 wide, aspect preserved.
             iup = gc.upload_image(ref_paths[0])
             sk = dict(knobs)
+            # Default the preservation composite OFF for SCAIL-2:
+            # David's first judged run showed a visible border around
+            # her and the partner underneath her cut away -- the
+            # composite pastes her inside a mask outline and severs
+            # the occlusion/contact SCAIL-2 solves jointly when it
+            # generates the whole frame. Explicit composite=true in
+            # the request still turns it back on.
+            sk.setdefault("composite", False)
             if info.get("width"):
                 sw, sh = int(info["width"]), int(info["height"])
                 tw = 704 if sw <= 1408 else (sw // 32) * 32
@@ -2096,7 +2104,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                   "mask_prompt", "mask_expand", "face_lock", "protect_contact",
                   "mask_threshold", "contact_reach", "contact_pad",
                   "partner_threshold", "engine", "ref_threshold",
-                  "composite_expand", "composite_feather")
+                  "composite_expand", "composite_feather", "composite")
                  if k in raw}
         media = body.get("media") or ""
         params = {"prompt": prompt, **knobs}
