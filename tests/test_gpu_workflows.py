@@ -50,7 +50,11 @@ def test_models_match_models_txt():
                               "loras", "checkpoints", "clip_vision",
                               "controlnet", "upscale_models", "SEEDVR2")
             basenames.add(os.path.basename(path_in_repo))
-    assert basenames == set(gw.MODELS.values())
+    # Locally produced artifacts are referenced by the builders but
+    # cannot be downloaded by the bootstrap: the person LoRA is
+    # trained on the pod and copied into loras/ (stage2_full.sh).
+    local_only = {"skswoman.safetensors"}
+    assert basenames == set(gw.MODELS.values()) - local_only
 
 
 # -------------------------------------------------------------- image edit --
@@ -335,6 +339,38 @@ def test_video_replace_model_scail_relight_chain():
                                        relight_strength=0.0)
     assert "51" not in off
     assert off["7"]["inputs"]["model"] == ["6", 0]
+
+
+def test_video_replace_model_scail_person_lora_chain():
+    # Default: no person LoRA node (file may not exist on the pod).
+    base = gw.video_replace_model_scail("v.mp4", "r.jpg")
+    assert "52" not in base
+    # With relight on: person LoRA is last, after relight.
+    wf = gw.video_replace_model_scail("v.mp4", "r.jpg",
+                                      person_lora_strength=1.0)
+    assert wf["52"]["class_type"] == "LoraLoaderModelOnly"
+    assert wf["52"]["inputs"]["model"] == ["51", 0]
+    assert wf["52"]["inputs"]["lora_name"] == "skswoman.safetensors"
+    assert wf["7"]["inputs"]["model"] == ["52", 0]
+    # With relight off: person LoRA hangs off DPO instead.
+    wf2 = gw.video_replace_model_scail("v.mp4", "r.jpg",
+                                       relight_strength=0.0,
+                                       person_lora_strength=0.7)
+    assert wf2["52"]["inputs"]["model"] == ["6", 0]
+    assert wf2["52"]["inputs"]["strength_model"] == 0.7
+    assert wf2["7"]["inputs"]["model"] == ["52", 0]
+
+
+def test_video_replace_model_scail_gap_person_lora():
+    wf = gw.video_replace_model_scail_gap(
+        "v.mp4", "r.jpg", cache_id="job-9", person_lora_strength=1.0)
+    assert_links_valid(wf)
+    assert wf["52"]["inputs"]["lora_name"] == "skswoman.safetensors"
+    assert wf["52"]["inputs"]["model"] == ["51", 0]
+    assert wf["7"]["inputs"]["model"] == ["52", 0]
+    off = gw.video_replace_model_scail_gap("v.mp4", "r.jpg",
+                                           cache_id="job-9")
+    assert "52" not in off
 
 
 def test_video_replace_model_scail_continuation():
