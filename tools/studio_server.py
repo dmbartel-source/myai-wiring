@@ -544,16 +544,33 @@ def _chunk_bounds(duration: float, chunk_s: float) -> list:
     return bounds or [(0.0, duration)]
 
 
-def _split_video_chunks(path: str, workdir: str, chunk_s: float) -> list:
+def _even_bounds(duration: float, max_chunk: float) -> list:
+    """Even [(start, length), ...] parts, each <= max_chunk and >= 2s
+    (Seedance reference clips need 2-15s; the tail must not strand a
+    sub-2s runt)."""
+    import math
+    n = max(1, int(math.ceil(duration / max_chunk)))
+    step = duration / n
+    return [(round(i * step, 3), round(step, 3)) for i in range(n)]
+
+
+def _split_video_chunks(path: str, workdir: str, chunk_s: float,
+                        even: bool = False) -> list:
     """Split a video into re-encoded MP4 chunks (no audio needed:
-    the original audio is muxed back onto the final stitch)."""
+    the original audio is muxed back onto the final stitch).
+
+    even=True spreads the duration into equal parts <= chunk_s so no
+    runt tail is left (used for Seedance's 2-15s clip window).
+    """
     import subprocess as _sp
     info = _probe_video_info(path)
     duration = info.get("duration") or 0.0
     if duration <= chunk_s + 0.05:
         return [path]
     chunks = []
-    for i, (start, length) in enumerate(_chunk_bounds(duration, chunk_s)):
+    bounds = (_even_bounds(duration, chunk_s) if even
+              else _chunk_bounds(duration, chunk_s))
+    for i, (start, length) in enumerate(bounds):
         out = os.path.join(workdir, f"chunk_{i:03d}.mp4")
         r = _sp.run(["ffmpeg", "-y", "-v", "error",
                      "-ss", f"{start:.3f}", "-i", path,
@@ -974,8 +991,12 @@ def _run_job(job_id: str) -> None:
                         result_name=result_name)
             return
         elif kind == "model_replace":
-            # AI model replacement via Venice Seedance R2V: base video is
-            # the performance; reference photo/video defines the model.
+            # AI model replacement via Venice Seedance R2V: base video
+            # is the performance; the reference defines the model.
+            # Seedance takes at most 15s of reference video per call,
+            # so longer bases are split into even <=14s parts, each
+            # edited separately, then stitched back together with the
+            # original audio restored.
             if vc is None:
                 raise RuntimeError("venice_client not available")
             p = job["params"]
@@ -986,48 +1007,90 @@ def _run_job(job_id: str) -> None:
             prompt = p.get("prompt", "")
             quality = p.get("quality") or vc.DEFAULT_QUALITY
             q = vc.QUALITY_LEVELS[quality]
-            duration_s = float(p.get("duration_s", 5.0))
-            JOBS.update(job_id, status="running", progress=5,
-                        phase="preparing video for Venice")
-            # Seedance only accepts MP4/MOV + H.264/HEVC reference
-            # clips; anything else earns a generic Venice 500.
-            # Convert off-spec files locally first.
-            send_base = _venice_ready_video(mpath, jobdir, "base")
-            send_ref = ref_path
-            if ref_type == "video":
-                send_ref = _venice_ready_video(ref_path, jobdir, "ref")
-            JOBS.update(job_id, status="running", progress=10,
-                        phase="submitting to Venice")
-            args = {
-                "prompt": prompt,
-                "duration": duration_s,
-                "resolution": q["resolution"],
-                # Venice requires aspect_ratio on R2V submits; "adaptive"
-                # keeps the base video's own framing.
-                "aspect_ratio": "adaptive",
-                "reference_video_urls": [vc.file_to_data_url(send_base)],
-            }
-            if ref_type == "image":
-                args["reference_image_urls"] = [vc.file_to_data_url(ref_path)]
-            elif ref_type == "video":
-                args["reference_video_urls"].append(
-                    vc.file_to_data_url(send_ref))
-            try:
-                vjob = vc.submit("venice-seedance-r2v", args)
-            except Exception as e:
-                info = _probe_video_info(send_base)
-                raise RuntimeError(
-                    f"{e} [base clip: {info.get('duration', 0):.1f}s, "
-                    f"{(info.get('size') or 0) / 1e6:.1f} MB, "
-                    f"{info.get('format', '?')}/{info.get('vcodec', '?')}]"
-                ) from e
-            JOBS.update(job_id, status="running", progress=30,
-                        phase="Venice is rendering")
-            url = vc.wait(vjob, timeout_s=1200.0, poll_interval_s=15.0)
-            JOBS.update(job_id, status="running", progress=90,
-                        phase="downloading result")
+            base_info = _probe_video_info(mpath)
+            base_dur = base_info.get("duration") or 0.0
+
+            def _submit_edit(video_path, seconds):
+                args = {
+                    "prompt": prompt,
+                    "duration": seconds,
+                    "resolution": q["resolution"],
+                    # Venice requires aspect_ratio on R2V submits;
+                    # "adaptive" keeps the base video's own framing.
+                    "aspect_ratio": "adaptive",
+                    "reference_video_urls":
+                        [vc.file_to_data_url(video_path)],
+                }
+                if ref_type == "image":
+                    args["reference_image_urls"] = \
+                        [vc.file_to_data_url(ref_path)]
+                elif ref_type == "video":
+                    # A video reference would eat the 15s combined
+                    # budget; a still frame of the model anchors
+                    # identity just as well and always fits.
+                    frame = _ensure_photo_ref(ref_path, jobdir)
+                    args["reference_image_urls"] = \
+                        [vc.file_to_data_url(frame)]
+                try:
+                    return vc.submit("venice-seedance-r2v", args)
+                except Exception as e:
+                    info = _probe_video_info(video_path)
+                    raise RuntimeError(
+                        f"{e} [clip: {info.get('duration', 0):.1f}s, "
+                        f"{(info.get('size') or 0) / 1e6:.1f} MB, "
+                        f"{info.get('format', '?')}/"
+                        f"{info.get('vcodec', '?')}]") from e
+
             result_name = f"{base}_modelreplace.mp4"
-            vc.download_to_file(url, os.path.join(jobdir, result_name))
+            if base_dur and base_dur > 15.0:
+                chunks = _split_video_chunks(mpath, jobdir, 14.0,
+                                             even=True)
+                rendered = []
+                for ci, chunk in enumerate(chunks):
+                    JOBS.update(
+                        job_id, status="running",
+                        progress=int(5 + (ci / len(chunks)) * 80),
+                        phase=f"AI-editing part {ci + 1} of {len(chunks)}")
+                    cinfo = _probe_video_info(chunk)
+                    vjob = _submit_edit(chunk,
+                                        cinfo.get("duration") or 10.0)
+                    url = vc.wait(vjob, timeout_s=1200.0,
+                                  poll_interval_s=15.0)
+                    out_chunk = os.path.join(jobdir,
+                                             f"ai_out_{ci:03d}.mp4")
+                    vc.download_to_file(url, out_chunk)
+                    rendered.append(out_chunk)
+                JOBS.update(job_id, status="running", progress=90,
+                            phase="stitching parts + restoring audio")
+                stitched = os.path.join(jobdir, f"{base}_stitched.mp4")
+                _concat_normalized(rendered, stitched, mpath)
+                _mux_audio(stitched, mpath,
+                           os.path.join(jobdir, result_name))
+                import glob as _glob
+                for pat in ("chunk_*.mp4", "ai_out_*.mp4", "norm_*.mp4",
+                            "concat_list.txt", f"{base}_stitched.mp4",
+                            "ref_frame.jpg"):
+                    for tmp in _glob.glob(os.path.join(jobdir, pat)):
+                        try:
+                            os.remove(tmp)
+                        except OSError:
+                            pass
+            else:
+                JOBS.update(job_id, status="running", progress=5,
+                            phase="preparing video for Venice")
+                send_base = _venice_ready_video(mpath, jobdir, "base")
+                JOBS.update(job_id, status="running", progress=10,
+                            phase="submitting to Venice")
+                vjob = _submit_edit(send_base,
+                                    float(p.get("duration_s", 5.0)))
+                JOBS.update(job_id, status="running", progress=30,
+                            phase="Venice is rendering")
+                url = vc.wait(vjob, timeout_s=1200.0,
+                              poll_interval_s=15.0)
+                JOBS.update(job_id, status="running", progress=90,
+                            phase="downloading result")
+                vc.download_to_file(url,
+                                    os.path.join(jobdir, result_name))
             JOBS.update(job_id, status="done", progress=100,
                         phase="done",
                         result_url=f"/api/result/{job_id}/{result_name}",
@@ -2130,33 +2193,24 @@ class StudioHandler(BaseHTTPRequestHandler):
             self._send_json({"error": f"unknown quality {quality!r}"}, 400)
             return
         spec = vc.VENICE_MODELS["venice-seedance-r2v"]
-        # Seedance reference inputs have hard limits (Venice docs):
-        # each clip 2-15s, combined <= 15s. An over-limit clip makes
-        # Venice fail with a generic 500, so check here and say why.
+        # Seedance takes at most 15s of reference video per call;
+        # longer bases are split into <=14s parts server-side and
+        # stitched back together, so any length is fine. A reference
+        # video is reduced to a still frame of the model (it would
+        # otherwise eat the 15s combined budget).
         base_info = _probe_video_info(mpath)
         base_dur = base_info.get("duration") or 0.0
-        if base_dur and not (2.0 <= base_dur <= 15.0):
+        if base_dur and base_dur < 2.0:
             self._send_json(
-                {"error": f"AI Replace accepts clips of 2-15 seconds "
-                          f"(yours is {base_dur:.0f}s). Trim it in the "
-                          "Edit tab first \u2014 or use Best Match / "
-                          "Full-Body, which process videos of any "
-                          "length automatically."}, 400)
+                {"error": "AI Replace needs at least 2 seconds of video."},
+                400)
             return
-        if ref_type == "video":
-            ref_info = _probe_video_info(ref_path)
-            ref_dur = ref_info.get("duration") or 0.0
-            if ref_dur and base_dur + ref_dur > 15.0:
-                self._send_json(
-                    {"error": f"base + reference videos total "
-                              f"{base_dur + ref_dur:.0f}s; AI Replace "
-                              "allows 15s combined. Use a photo reference "
-                              "or shorter clips."}, 400)
-                return
         duration_s = float(body.get("duration_s") or base_dur
                            or spec.get("default_duration_s", 10.0))
         duration_s = min(duration_s, float(spec.get("max_duration_s", 15.0)))
-        est = round(spec["cost_per_s"] * duration_s, 2)
+        # Estimate on the FULL video length (chunked calls are billed
+        # per output second).
+        est = round(spec["cost_per_s"] * (base_dur or duration_s), 2)
         job_id = JOBS.new(media, "model_replace", "venice-seedance-r2v", {
             "ref_media": ref_media,
             "prompt": prompt or ("Replace the person in this video with "
