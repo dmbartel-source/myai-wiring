@@ -69,6 +69,12 @@ MODELS = {
     "scail_lightx2v_lora":
         "lightx2v_I2V_14B_480p_cfg_step_distill_rank128_bf16.safetensors",
     "clip_vision_h": "clip_vision_h.safetensors",
+    # SeedVR2 video detail finisher (AEmotionStudio/SeedVR2-models,
+    # numz node pack) -- optional finals pass: diffusion upscale /
+    # detail restoration over the finished frames, LAB colour
+    # correction back toward the input. Files live in models/SEEDVR2.
+    "seedvr2_dit": "seedvr2_ema_7b_fp8_e4m3fn.safetensors",
+    "seedvr2_vae": "ema_vae_fp16.safetensors",
 }
 
 DEFAULT_NEGATIVE = (
@@ -557,6 +563,7 @@ def video_replace_model_scail(
     frame_offset: int = 0,
     previous_frame_count: int = 5,
     relight_strength: float = 1.0,
+    seedvr2_resolution: int = 0,
     sort_by: str = "left_to_right",
     pose_strength: float = 1.0,
     shift: float = 8.0,
@@ -838,6 +845,28 @@ def video_replace_model_scail(
                                "resize_source": False,
                                "mask": ["27", 0]}}
         final = ["28", 0]
+    if seedvr2_resolution:
+        # SeedVR2 unified finish (research sweep #1, item 7): a
+        # diffusion detail pass over the FINISHED frames -- after
+        # any composite, so generated and source regions get the
+        # same treatment and the paste seam is blended by the pass
+        # itself. resolution is the target SHORTEST edge; 0 = off.
+        # Changes the output size, so the server only enables it on
+        # single-pass jobs (chunk anchors are render-size).
+        wf["60"] = {"class_type": "SeedVR2LoadDiTModel",
+                    "inputs": {"model": MODELS["seedvr2_dit"],
+                               "device": "cuda:0"}}
+        wf["61"] = {"class_type": "SeedVR2LoadVAEModel",
+                    "inputs": {"model": MODELS["seedvr2_vae"],
+                               "device": "cuda:0"}}
+        wf["62"] = {"class_type": "SeedVR2VideoUpscaler",
+                    "inputs": {"image": final, "dit": ["60", 0],
+                               "vae": ["61", 0], "seed": int(seed),
+                               "resolution": int(seedvr2_resolution),
+                               "max_resolution": 0, "batch_size": 21,
+                               "uniform_batch_size": True,
+                               "color_correction": "lab"}}
+        final = ["62", 0]
     wf["29"] = {"class_type": "VHS_VideoCombine",
                 "inputs": {"images": final, "frame_rate": float(fps),
                            "loop_count": 0,
@@ -845,3 +874,51 @@ def video_replace_model_scail(
                            "format": "video/h264-mp4", "pingpong": False,
                            "save_output": True}}
     return wf
+
+
+def video_seedvr2_upscale(
+    source_video: str,
+    *,
+    resolution: int = 1024,
+    seed: int = 42,
+    fps: float = 16.0,
+    frames: int = 0,
+    filename_prefix: str = "myai/seedvr2",
+) -> dict:
+    """Standalone SeedVR2 detail finish over an existing video.
+
+    Decoupled from the SCAIL graph so the server can run it as a
+    post-pass over ANY finished (e.g. stitched long) video whose
+    chunks were rendered at native size -- the in-graph pass is
+    single-pass only because chunk anchors are render-size.
+    resolution is the target shortest edge; frames=0 loads the
+    whole video. Batch 21 (4n+1) with tail padding, LAB colour
+    correction toward the input frames.
+    """
+    return {
+        "1": {"class_type": "VHS_LoadVideo",
+              "inputs": {"video": source_video, "force_rate": float(fps),
+                         "custom_width": 0, "custom_height": 0,
+                         "frame_load_cap": int(frames),
+                         "skip_first_frames": 0, "select_every_nth": 1,
+                         "format": "AnimateDiff"}},
+        "2": {"class_type": "SeedVR2LoadDiTModel",
+              "inputs": {"model": MODELS["seedvr2_dit"],
+                         "device": "cuda:0"}},
+        "3": {"class_type": "SeedVR2LoadVAEModel",
+              "inputs": {"model": MODELS["seedvr2_vae"],
+                         "device": "cuda:0"}},
+        "4": {"class_type": "SeedVR2VideoUpscaler",
+              "inputs": {"image": ["1", 0], "dit": ["2", 0],
+                         "vae": ["3", 0], "seed": int(seed),
+                         "resolution": int(resolution),
+                         "max_resolution": 0, "batch_size": 21,
+                         "uniform_batch_size": True,
+                         "color_correction": "lab"}},
+        "5": {"class_type": "VHS_VideoCombine",
+              "inputs": {"images": ["4", 0], "frame_rate": float(fps),
+                         "loop_count": 0,
+                         "filename_prefix": filename_prefix,
+                         "format": "video/h264-mp4", "pingpong": False,
+                         "save_output": True}},
+    }
