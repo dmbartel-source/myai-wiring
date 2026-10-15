@@ -889,6 +889,22 @@ def _run_scail_chunks(gc_, gw_, job_id: str, jobdir: str, vpath: str,
     return stitched
 
 
+def _run_seedvr2_finish(gc_, gw_, jobdir: str, video_path: str,
+                        resolution: int = 1024) -> str:
+    """SeedVR2 detail finish over a finished silent video -- the
+    long-video counterpart of the in-graph SCAIL pass: upload the
+    stitched video, run the standalone upscale graph, download.
+    Returns the finished path; raises on pod failure (the caller
+    falls back to the un-finished video)."""
+    up = gc_.upload_video(video_path)
+    wf = gw_.video_seedvr2_upscale(up, resolution=resolution, fps=16.0)
+    outs = gc_.run_workflow(wf, os.path.join(jobdir, "_seedvr2"),
+                            timeout_s=3600.0, poll_interval_s=10.0)
+    if not outs:
+        raise RuntimeError("GPU pod produced no SeedVR2 output")
+    return outs[0]
+
+
 def _run_gpu_job(job_id: str, job: dict) -> None:
     """Self-hosted GPU generation on David's RunPod ComfyUI pod.
 
@@ -939,6 +955,7 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
     JOBS.update(job_id, status="running", progress=10,
                 phase="uploading to your GPU pod")
     scail_chunks = None   # gpu_replace SCAIL: long-video chunk plan
+    scail_seedvr2 = False  # gpu_replace SCAIL: SeedVR2 detail finish
     gpu_face_ref = None   # gpu_replace: face-lock source image
     gpu_src_video = None  # gpu_replace: original video (audio source)
     if gen_id == "gpu_image_edit":
@@ -1053,6 +1070,13 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                 sk["shift"] = 3.0
             if "lightx2v_strength" not in p:
                 sk["lightx2v_strength"] = 0.0
+            # SeedVR2 detail finish (optional, off by default):
+            # single-pass jobs take it in-graph; long jobs get it
+            # as a post-pass over the stitched video instead (chunk
+            # anchors are render-size, so it cannot run in a chunk).
+            scail_seedvr2 = (bool(p.get("seedvr2"))
+                             and p.get("seedvr2")
+                             not in (False, 0, "false"))
             # The prompt must describe the post-replacement scene
             # with BOTH people and their interaction (official
             # SCAIL-2 prompt semantics); the shared default only
@@ -1079,7 +1103,9 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                 wf = gw.video_replace_model_scail(
                     vup, iup, scail_prompt,
                     mask_prompt=(p.get("mask_prompt") or "person"),
-                    mask_threshold=_f("mask_threshold", 0.4), **sk)
+                    mask_threshold=_f("mask_threshold", 0.4), **sk,
+                    **({"seedvr2_resolution": 1024}
+                       if scail_seedvr2 else {}))
         else:
             iup = gc.upload_image(rpath)
             wf = gw.video_replace_model(
@@ -1105,6 +1131,17 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
             scail_chunks["prompt"], scail_chunks["mask_prompt"],
             scail_chunks["mask_threshold"], scail_chunks["sk"],
             scail_chunks["info"], progress_cb=_progress)]
+        if scail_seedvr2:
+            # Long-video SeedVR2: post-pass over the stitched video
+            # (see the note in the SCAIL branch). Falls back to the
+            # un-finished stitch on any pod failure.
+            try:
+                JOBS.update(job_id, status="running", progress=88,
+                            phase="SeedVR2 detail finish on your "
+                                  "GPU pod")
+                saved = [_run_seedvr2_finish(gc, gw, jobdir, saved[0])]
+            except Exception:
+                pass
     else:
         saved = gc.run_workflow(wf, jobdir, timeout_s=timeout_s,
                                 poll_interval_s=10.0, progress_cb=_progress)
@@ -2265,7 +2302,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                   "mask_prompt", "mask_expand", "face_lock", "protect_contact",
                   "mask_threshold", "contact_reach", "contact_pad",
                   "partner_threshold", "engine", "ref_threshold",
-                  "composite_expand", "composite_feather", "composite")
+                  "composite_expand", "composite_feather", "composite",
+                  "seedvr2")
                  if k in raw}
         media = body.get("media") or ""
         params = {"prompt": prompt, **knobs}
