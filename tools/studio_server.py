@@ -689,7 +689,21 @@ def _face_lock(video_path: str, ref_photo_path: str, out_path: str,
         raise RuntimeError("could not read reference photo")
     silent = os.path.join(workdir, "_facelock_silent.mp4")
     fv.replace_in_video(video_path, src_face, silent)
-    _mux_audio(silent, video_path, out_path)
+    # OpenCV writes MPEG-4 Part 2 ("mp4v"), which phone and browser
+    # players render as a BLACK SCREEN (audio plays, picture does
+    # not). Re-encode the composited video to H.264 and attach the
+    # source video's audio in the same pass.
+    import subprocess as _sp
+    r = _sp.run(["ffmpeg", "-y", "-v", "error",
+                 "-i", silent, "-i", video_path,
+                 "-map", "0:v:0", "-map", "1:a:0?",
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                 "-c:a", "aac", "-shortest", out_path],
+                capture_output=True, text=True, timeout=3600)
+    if r.returncode != 0 or not os.path.exists(out_path):
+        # Last resort: mux the un-re-encoded composite (may not
+        # play everywhere, but keeps the job's work).
+        _mux_audio(silent, video_path, out_path)
     try:
         os.remove(silent)
     except OSError:
