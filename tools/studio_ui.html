@@ -1207,18 +1207,14 @@ function showModelReplace(){
 }
 function mrCost(){
   const c = $("#mr-cost");
+  const refNote = mrRef && mrRef.type==="video"
+    ? " A still frame from your reference video will be used as the model image." : "";
   if(mrMode==="face"){
-    c.innerHTML = mrRef && mrRef.type!=="image"
-      ? "⚠️ Face mode needs a reference <b>photo</b>."
-      : "Face Replace is <b>FREE</b> and runs on your server — the face comes straight from your reference photo, pixel for pixel. Everything else in the video is untouched.";
+    c.innerHTML = "Face Replace is <b>FREE</b> and runs on your server — the face comes straight from your reference, pixel for pixel. Everything else in the video is untouched." + refNote;
   }else if(mrMode==="combo"){
-    c.innerHTML = mrRef && mrRef.type!=="image"
-      ? "⚠️ Best Match needs a reference <b>photo</b> of your model."
-      : "Best Match (~$0.40 per 5s of video + free face lock): Wan Animate swaps in your model's body with the same scene, poses and motion — then your photo's <b>real face</b> is composited over the result, so the face is pixel-true and drift is minimal. Original audio is kept.";
+    c.innerHTML = "Best Match (~$0.40 per 5s of video + free face lock): Wan Animate swaps in your model's body with the same scene, poses and motion — then your model's <b>real face</b> is composited over the result, so the face is pixel-true and drift is minimal. Works on videos of any length. Original audio is kept." + refNote;
   }else if(mrMode==="animate"){
-    c.innerHTML = mrRef && mrRef.type!=="image"
-      ? "⚠️ Full-Body Replace needs a reference <b>photo</b> of your model."
-      : "Full-Body Replace (Wan Animate, ~$0.40 per 5s of video): your model takes over the whole performance — same scene, same poses, same motion. The original audio is kept.";
+    c.innerHTML = "Full-Body Replace (Wan Animate, ~$0.40 per 5s of video): your model takes over the whole performance — same scene, same poses, same motion. Works on videos of any length. The original audio is kept." + refNote;
   }else{
     c.innerHTML = "AI Replace (~$3.00/clip): generative — the AI re-creates the model from your reference. It reinterprets rather than copies.";
   }
@@ -1230,8 +1226,6 @@ $("#mr-go").addEventListener("click", async ()=>{
   if(!mrBase){ alert("Pick a base video first."); return; }
   if(!mrRef){ alert("Pick a reference photo or video."); return; }
   if(mrMode==="face" && mrRef.type!=="image"){ alert("Face mode needs a reference photo."); return; }
-  if(mrMode==="animate" && mrRef.type!=="image"){ alert("Full-Body Replace needs a reference photo of your model."); return; }
-  if(mrMode==="combo" && mrRef.type!=="image"){ alert("Best Match needs a reference photo of your model."); return; }
   const box = $("#gen-result");
   box.classList.remove("hidden");
   box.innerHTML = `<div class="spinner"></div>`;
