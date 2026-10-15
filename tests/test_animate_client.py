@@ -120,3 +120,16 @@ def test_key_from_env_file(monkeypatch, tmp_path):
     (d / "wavespeed.env").write_text("WAVESPEED_API_KEY=file-key-9\n")
     monkeypatch.setenv("HOME", str(tmp_path))
     assert ac.get_api_key() == "file-key-9"
+
+
+def test_poll_uses_result_path(monkeypatch):
+    monkeypatch.setenv("WAVESPEED_API_KEY", "test-key")
+    seen = {}
+
+    def opener(req, timeout=None):
+        seen["url"] = req.full_url
+        return FakeResp({"data": {"status": "completed",
+                                  "outputs": ["https://x/out.mp4"]}})
+    st = ac.poll(ac.AnimateJob("pred-123"), opener=opener)
+    assert seen["url"].endswith("/predictions/pred-123/result")
+    assert st["url"] == "https://x/out.mp4"
