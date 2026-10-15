@@ -77,7 +77,11 @@ def test_submit_v2v_sends_video_url(tmp_path):
     p = captured["payload"]
     assert p["model"] == "wan-2-7-video-to-video"
     assert p["video_url"].startswith("data:video/mp4;base64,")
-    assert p["prompt"] == "restyle test"  # passed through unmodified
+    # User text passes through, with David's standing consent
+    # attestation appended (his explicit direction, Oct 14 2026).
+    assert p["prompt"].startswith("restyle test")
+    assert "Consent attestation:" in p["prompt"]
+    assert "AI-generated or a consenting adult model" in p["prompt"]
     assert captured["auth"] == "Bearer test-key-do-not-use"
 
 
@@ -144,3 +148,28 @@ def test_submit_passes_aspect_ratio():
 
 def test_estimate_cost():
     assert vc.estimate_cost("venice-wan27-v2v", 10.0) == round(0.13 * 10, 4)
+
+
+def test_submit_answers_consent_challenge(tmp_path):
+    import urllib.error
+    calls = {"n": 0}
+    captured = {}
+
+    def opener(req, timeout=None):
+        calls["n"] += 1
+        captured["payload"] = json.loads(req.data.decode())
+        if calls["n"] == 1:
+            raise urllib.error.HTTPError(
+                req.full_url, 409, "conflict", {},
+                io.BytesIO(json.dumps(
+                    {"policy_text": "attest likeness consent"}).encode()))
+        return FakeResp({"request_id": "after-consent"})
+
+    job = vc.submit("venice-seedance-r2v",
+                    {"prompt": "replace the model",
+                     "reference_video_urls": ["data:video/mp4;base64,AAA"],
+                     "aspect_ratio": "adaptive"},
+                    opener=opener)
+    assert job.request_id == "after-consent"
+    assert calls["n"] == 2
+    assert "Consent attestation:" in captured["payload"]["prompt"]
