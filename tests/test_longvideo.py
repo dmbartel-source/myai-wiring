@@ -238,6 +238,42 @@ def test_clip_qc_rejects_non_advancing(tmp_path):
     assert not ok and "previous" in reason
 
 
+def _make_block_video(path, blocks):
+    """Build a video from (color, seconds) blocks via the concat filter."""
+    inputs = []
+    parts = []
+    for i, (color, secs) in enumerate(blocks):
+        inputs += ["-f", "lavfi", "-i",
+                   f"color={color}:duration={secs}:size=320x240:rate=30"]
+        parts.append(f"[{i}:v]")
+    fc = "".join(parts) + f"concat=n={len(blocks)}:v=1:a=0[out]"
+    cmd = (["ffmpeg", "-hide_banner", "-y"] + inputs +
+           ["-filter_complex", fc, "-map", "[out]",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)])
+    subprocess.run(cmd, capture_output=True, check=True, timeout=120)
+    return str(path)
+
+
+@NEEDS_FFMPEG
+def test_clip_qc_rejects_internal_loop(tmp_path):
+    """First and last frames differ (passes the motion check), but the
+    clip revisits its opening frame mid-clip: an internal loop."""
+    loop = _make_block_video(tmp_path / "loop.mp4", [
+        ("red", 1.2), ("green", 1.0), ("red", 1.0), ("blue", 0.8)])
+    ok, reason, _ = lv._clip_qc(loop, None)
+    assert not ok and "loops back" in reason
+
+
+@NEEDS_FFMPEG
+def test_clip_qc_accepts_non_repeating_blocks(tmp_path):
+    """Every block a new color: no distant repeat, must pass."""
+    fine = _make_block_video(tmp_path / "fine.mp4", [
+        ("red", 1.0), ("green", 1.0), ("blue", 1.0), ("white", 1.0)])
+    ok, reason, sig = lv._clip_qc(fine, None)
+    assert ok, reason
+    assert sig is not None
+
+
 @NEEDS_FFMPEG
 def test_run_chain_qc_retries_with_escalation(tmp_path, clips):
     """First download is a static (looping) clip: the chain must reject
@@ -284,3 +320,99 @@ def test_run_chain_qc_retries_with_escalation(tmp_path, clips):
     # clip 0 took 2 submissions (1 rejected), clip 1 took 1.
     assert len(calls) == 3
     assert "CRITICAL CORRECTION" in calls[1]["prompt"]
+
+
+@NEEDS_FFMPEG
+def test_run_chain_applies_clip_lock(tmp_path, clips):
+    """clip_lock_fn runs in place on each accepted clip, and the next
+    clip is seeded from the locked clip file."""
+    from video_edit import extract_last_frame
+
+    locked = []
+    seeded_from = []
+
+    def fake_lock(path):
+        locked.append(os.path.basename(path))
+        # In-place rewrite, as the Studio's face lock does.
+        tmp = path + ".locked.mp4"
+        shutil.copy2(clips[2], tmp)
+        os.replace(tmp, path)
+
+    def fake_extract(video, jpg):
+        seeded_from.append(os.path.basename(video))
+        return extract_last_frame(video, jpg)
+
+    calls = []
+
+    def fake_submit(a):
+        calls.append(dict(a))
+        return {"job": len(calls)}
+
+    def fake_download(url, dest):
+        shutil.copy2(clips[(len(calls) - 1) % 3], dest)
+        return dest
+
+    lv.run_chain(
+        beats=["hero flies", "hero lands"],
+        clip_duration_s=15.0,
+        chain_mode="lastframe",
+        submit_clip=fake_submit,
+        wait_clip=lambda job: "stub",
+        download_clip=fake_download,
+        extract_frame_fn=fake_extract,
+        file_to_url_fn=lambda p: "data:video/mp4;base64,STUB",
+        workdir=str(tmp_path / "chain"),
+        ref_image_path=None,
+        ref_video_path=clips[0],
+        i2v_model_id="venice-wan27-uncensored",
+        v2v_model_id="venice-wan27-v2v",
+        resolution="720p",
+        overlap_s=0.0,
+        progress_cb=lambda i, n, ph: None,
+        clip_lock_fn=fake_lock,
+    )
+    assert locked == ["clip_00.mp4", "clip_01.mp4"]
+    assert seeded_from == ["clip_00.mp4"]
+
+
+@NEEDS_FFMPEG
+def test_run_chain_clip_lock_failure_never_kills_chain(tmp_path, clips):
+    """A per-clip lock failure is a progress warning, not a dead chain:
+    the clips are already paid for."""
+    from video_edit import extract_last_frame
+
+    phases = []
+    calls = []
+
+    def bad_lock(path):
+        raise RuntimeError("no face detected in reference photo")
+
+    def fake_submit(a):
+        calls.append(dict(a))
+        return {"job": len(calls)}
+
+    def fake_download(url, dest):
+        shutil.copy2(clips[(len(calls) - 1) % 3], dest)
+        return dest
+
+    final = lv.run_chain(
+        beats=["hero flies", "hero lands"],
+        clip_duration_s=15.0,
+        chain_mode="lastframe",
+        submit_clip=fake_submit,
+        wait_clip=lambda job: "stub",
+        download_clip=fake_download,
+        extract_frame_fn=extract_last_frame,
+        file_to_url_fn=lambda p: "data:video/mp4;base64,STUB",
+        workdir=str(tmp_path / "chain"),
+        ref_image_path=None,
+        ref_video_path=clips[0],
+        i2v_model_id="venice-wan27-uncensored",
+        v2v_model_id="venice-wan27-v2v",
+        resolution="720p",
+        overlap_s=0.0,
+        progress_cb=lambda i, n, ph: phases.append(ph),
+        clip_lock_fn=bad_lock,
+    )
+    assert os.path.isfile(final)
+    assert any("per-clip lock failed" in ph for ph in phases)
