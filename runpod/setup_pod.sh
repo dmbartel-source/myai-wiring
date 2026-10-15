@@ -113,7 +113,11 @@ while read -r repo path_in_repo subdir; do
   echo "downloading: $repo :: $path_in_repo -> models/$subdir/$fname"
   # hf download stages into a local dir mirroring the repo path; move the
   # single file flat into models/<subdir>/ where ComfyUI's loaders look.
-  stage="$(mktemp -d)"
+  # STAGE ON THE VOLUME, not /tmp: the container disk is only ~30GB
+  # and the largest model (VACE fp16) is ~35GB — /tmp staging ran
+  # out of space live (Oct 14 2026). Same-filesystem mv is instant.
+  mkdir -p "$VOLUME/.myai-stage"
+  stage="$(mktemp -d -p "$VOLUME/.myai-stage")"
   hf download "$repo" "$path_in_repo" --local-dir "$stage"
   mv "$stage/$path_in_repo" "$dest"
   rm -rf "$stage"
