@@ -42,7 +42,7 @@ echo "[motion] $MOTION"
 # PYTHONPATH must name the repo: the driver imports the project's own
 # packages (core, engine, scripts), and Python only auto-adds the
 # driver's own directory (/workspace), not the repo root.
-PYTHONPATH="$REPO" "$VPY" "$DRIVER" --refs "$REFS" --motion "$MOTION" --out "$OUT"
+PYTHONPATH="$REPO" "$VPY" "$DRIVER" --refs "$REFS" --motion "$MOTION" --out "$OUT" --backend gs
 rc=$?
 ls -la "$OUT" 2>/dev/null
 if [ "$rc" -eq 0 ] && [ -s "$OUT/avatar_motion_test.mp4" ]; then
