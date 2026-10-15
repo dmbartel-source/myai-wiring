@@ -472,6 +472,62 @@ JOBS.restore()  # Recover jobs from previous run, if any
 POOL = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 
+def _probe_video_info(path: str) -> dict:
+    """ffprobe facts about a video file ({} when unreadable)."""
+    import subprocess as _sp
+    try:
+        pr = _sp.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "format=duration,format_name,size:stream=codec_type,codec_name",
+             "-of", "json", path],
+            capture_output=True, text=True, timeout=30)
+        data = json.loads(pr.stdout or "{}")
+    except Exception:
+        return {}
+    fmt = data.get("format", {})
+    vcodec = ""
+    for st in data.get("streams", []):
+        if st.get("codec_type") == "video":
+            vcodec = st.get("codec_name", "")
+            break
+    try:
+        duration = float(fmt.get("duration") or 0)
+    except (TypeError, ValueError):
+        duration = 0.0
+    try:
+        size = int(fmt.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    return {"duration": duration, "format": fmt.get("format_name", ""),
+            "vcodec": vcodec, "size": size}
+
+
+def _venice_ready_video(path: str, workdir: str, tag: str) -> str:
+    """Return a Seedance-spec copy of a video (MP4/MOV + H.264/H.265).
+
+    Venice's Seedance reference inputs accept only mp4/mov containers
+    with H.264/HEVC video; anything else (webm, mkv, VP9, AV1...) makes
+    their endpoint fail with a generic 500. Transcode off-spec files
+    locally with ffmpeg; on-spec files pass through untouched.
+    """
+    info = _probe_video_info(path)
+    fmt = (info.get("format") or "").lower()
+    vcodec = (info.get("vcodec") or "").lower()
+    if ("mp4" in fmt or "mov" in fmt) and vcodec in ("h264", "hevc", "h265"):
+        return path
+    out = os.path.join(workdir, f"{tag}_venice.mp4")
+    cmd = ["ffmpeg", "-y", "-v", "error", "-i", path,
+           "-c:v", "libx264", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-movflags", "+faststart", out]
+    import subprocess as _sp
+    r = _sp.run(cmd, capture_output=True, text=True, timeout=900)
+    if r.returncode != 0 or not os.path.exists(out):
+        raise RuntimeError(
+            "could not convert the video to MP4/H.264 for Venice: "
+            + (r.stderr or "")[:200])
+    return out
+
+
 def _mux_audio(silent_video: str, audio_source: str, out_path: str) -> str:
     """Copy silent_video's picture + audio_source's audio into out_path.
 
@@ -821,6 +877,15 @@ def _run_job(job_id: str) -> None:
             quality = p.get("quality") or vc.DEFAULT_QUALITY
             q = vc.QUALITY_LEVELS[quality]
             duration_s = float(p.get("duration_s", 5.0))
+            JOBS.update(job_id, status="running", progress=5,
+                        phase="preparing video for Venice")
+            # Seedance only accepts MP4/MOV + H.264/HEVC reference
+            # clips; anything else earns a generic Venice 500.
+            # Convert off-spec files locally first.
+            send_base = _venice_ready_video(mpath, jobdir, "base")
+            send_ref = ref_path
+            if ref_type == "video":
+                send_ref = _venice_ready_video(ref_path, jobdir, "ref")
             JOBS.update(job_id, status="running", progress=10,
                         phase="submitting to Venice")
             args = {
@@ -830,14 +895,22 @@ def _run_job(job_id: str) -> None:
                 # Venice requires aspect_ratio on R2V submits; "adaptive"
                 # keeps the base video's own framing.
                 "aspect_ratio": "adaptive",
-                "reference_video_urls": [vc.file_to_data_url(mpath)],
+                "reference_video_urls": [vc.file_to_data_url(send_base)],
             }
             if ref_type == "image":
                 args["reference_image_urls"] = [vc.file_to_data_url(ref_path)]
             elif ref_type == "video":
                 args["reference_video_urls"].append(
-                    vc.file_to_data_url(ref_path))
-            vjob = vc.submit("venice-seedance-r2v", args)
+                    vc.file_to_data_url(send_ref))
+            try:
+                vjob = vc.submit("venice-seedance-r2v", args)
+            except Exception as e:
+                info = _probe_video_info(send_base)
+                raise RuntimeError(
+                    f"{e} [base clip: {info.get('duration', 0):.1f}s, "
+                    f"{(info.get('size') or 0) / 1e6:.1f} MB, "
+                    f"{info.get('format', '?')}/{info.get('vcodec', '?')}]"
+                ) from e
             JOBS.update(job_id, status="running", progress=30,
                         phase="Venice is rendering")
             url = vc.wait(vjob, timeout_s=1200.0, poll_interval_s=15.0)
@@ -1928,7 +2001,29 @@ class StudioHandler(BaseHTTPRequestHandler):
             self._send_json({"error": f"unknown quality {quality!r}"}, 400)
             return
         spec = vc.VENICE_MODELS["venice-seedance-r2v"]
-        duration_s = float(body.get("duration_s")
+        # Seedance reference inputs have hard limits (Venice docs):
+        # each clip 2-15s, combined <= 15s. An over-limit clip makes
+        # Venice fail with a generic 500, so check here and say why.
+        base_info = _probe_video_info(mpath)
+        base_dur = base_info.get("duration") or 0.0
+        if base_dur and not (2.0 <= base_dur <= 15.0):
+            self._send_json(
+                {"error": f"AI Replace accepts clips of 2-15 seconds "
+                          f"(yours is {base_dur:.0f}s). Trim it in the "
+                          "Edit tab first \u2014 or use Best Match / "
+                          "Full-Body, which handle up to 120s."}, 400)
+            return
+        if ref_type == "video":
+            ref_info = _probe_video_info(ref_path)
+            ref_dur = ref_info.get("duration") or 0.0
+            if ref_dur and base_dur + ref_dur > 15.0:
+                self._send_json(
+                    {"error": f"base + reference videos total "
+                              f"{base_dur + ref_dur:.0f}s; AI Replace "
+                              "allows 15s combined. Use a photo reference "
+                              "or shorter clips."}, 400)
+                return
+        duration_s = float(body.get("duration_s") or base_dur
                            or spec.get("default_duration_s", 10.0))
         duration_s = min(duration_s, float(spec.get("max_duration_s", 15.0)))
         est = round(spec["cost_per_s"] * duration_s, 2)
