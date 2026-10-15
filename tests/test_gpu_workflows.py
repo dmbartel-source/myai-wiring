@@ -293,6 +293,13 @@ def test_video_replace_model_scail_graph():
     # composite default: output pastes generated her over source frames
     assert wf["29"]["inputs"]["images"] == ["28", 0]
     assert wf["28"]["inputs"]["destination"] == ["2", 0]
+    # anti-interference tuning (David's first SCAIL-2 run, Oct 15):
+    # stricter reference detection keeps reference-background colours
+    # out of the identity mask; wider grow + tighter feather hides
+    # the composite seam.
+    assert wf["16"]["inputs"]["threshold"] == 0.5
+    assert wf["26"]["inputs"]["expand"] == 12
+    assert wf["27"]["inputs"]["left"] == 5
 
 
 def test_video_replace_model_scail_no_composite():
