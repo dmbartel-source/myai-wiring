@@ -330,8 +330,10 @@ def video_replace_model(
     composite_feather: int = 8,
     protect_contact: bool = True,
     partner_prompt: str = "man",
+    partner_threshold: float = 0.55,
     contact_reach: int = 24,
     contact_pad: int = 16,
+    contact_guard: int = 20,
     shift: float = _WAN_SHIFT,
     filename_prefix: str = "myai/replace",
 ) -> dict:
@@ -456,7 +458,7 @@ def video_replace_model(
         wf["26"] = {"class_type": "SAM3_VideoTrack",
                     "inputs": {"images": ["9", 0], "model": ["10", 0],
                                "conditioning": ["25", 0],
-                               "detection_threshold": mask_threshold,
+                               "detection_threshold": partner_threshold,
                                "max_objects": 4, "detect_interval": 1}}
         wf["27"] = {"class_type": "SAM3_TrackToMask",
                     "inputs": {"track_data": ["26", 0],
@@ -478,6 +480,23 @@ def video_replace_model(
                                "source": ["30", 0], "x": 0, "y": 0,
                                "operation": "subtract"}}
         eff_mask = ["31", 0]
+        # Gut guard: no matter how wrong the partner track is, any
+        # part of her farther than contact_guard px from the protected
+        # core is ALWAYS regenerated -- the subtraction can never eat
+        # the whole mask and silently return the source video.
+        wf["32"] = {"class_type": "GrowMask",
+                    "inputs": {"mask": ["29", 0],
+                               "expand": int(contact_guard),
+                               "tapered_corners": True}}
+        wf["33"] = {"class_type": "MaskComposite",
+                    "inputs": {"destination": ["14", 0],
+                               "source": ["32", 0], "x": 0, "y": 0,
+                               "operation": "subtract"}}
+        wf["34"] = {"class_type": "MaskComposite",
+                    "inputs": {"destination": ["31", 0],
+                               "source": ["33", 0], "x": 0, "y": 0,
+                               "operation": "add"}}
+        eff_mask = ["34", 0]
         wf["15"]["inputs"]["mask"] = eff_mask
         wf["17"]["inputs"]["mask"] = eff_mask
         wf["18"]["inputs"]["control_masks"] = eff_mask
