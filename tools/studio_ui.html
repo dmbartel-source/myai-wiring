@@ -283,6 +283,22 @@ footer.hint{text-align:center; color:var(--faint); font-size:12.5px; padding:20p
           🔒 Lock face to reference — after generating, put your photo's real face back in (true to reference, free)
         </label>
       </div>
+      <div id="gen-gpu-wrap" class="hidden" style="margin:8px 0">
+        <label style="font-size:13px;color:var(--dim)">Your GPU settings (RunPod pod)</label>
+        <div class="ctl-row" style="margin-top:4px">
+          <label>Seed</label><input type="number" id="gpu-seed" value="0" step="1">
+          <label>Steps</label><input type="number" id="gpu-steps" value="20" min="1" step="1">
+          <label>CFG</label><input type="number" id="gpu-cfg" value="5" min="0" step="0.5">
+        </div>
+        <div class="ctl-row" style="margin-top:4px">
+          <label>Width</label><input type="number" id="gpu-width" value="832" step="16">
+          <label>Height</label><input type="number" id="gpu-height" value="480" step="16">
+          <label>Frames</label><input type="number" id="gpu-frames" value="81" step="4">
+        </div>
+        <div class="ctl-row" style="margin-top:4px">
+          <label>Denoise</label><input type="number" id="gpu-denoise" value="1" min="0" max="1" step="0.05">
+        </div>
+      </div>
       <div class="price" id="gen-confirm-cost"></div>
       <div class="desc" id="gen-confirm-desc" style="color:var(--dim);font-size:14px"></div>
       <div class="row">
@@ -314,8 +330,9 @@ footer.hint{text-align:center; color:var(--faint); font-size:12.5px; padding:20p
       <div id="mr-ref-sel"></div>
       <h2 class="sec">Method</h2>
       <div id="mr-mode" class="qsel">
-        <button data-mode="ai" class="qbtn sel">🤖 AI Replace (~$3.00) — full model, photo or video reference</button>
-        <button data-mode="face" class="qbtn">🙂 Face Replace (FREE, local) — face only, photo reference</button>
+        <button data-mode="animate" class="qbtn sel">Full-Body Replace (Wan Animate) — whole model swapped in, same scene, pose &amp; motion · ~$0.40/5s</button>
+        <button data-mode="ai" class="qbtn">AI Replace (~$3.00) — generative, photo or video reference</button>
+        <button data-mode="face" class="qbtn">Face Replace (FREE, local) — face only, everything else pixel-identical</button>
       </div>
       <div id="mr-prompt-wrap">
         <h2 class="sec">Prompt (optional)</h2>
@@ -818,6 +835,8 @@ function confirmGen(o, refs){
   const isVeniceI2V = (o.id==="i2v_venice" || o.id==="i2v_venice_uncensored");
   $("#gen-model-wrap").classList.toggle("hidden", !isVeniceI2V);
   $("#gen-dur-wrap").classList.toggle("hidden", !isVeniceI2V);
+  // GPU (RunPod pod) options get the parameter block instead
+  $("#gen-gpu-wrap").classList.toggle("hidden", !o.id.startsWith("gpu_"));
   if(isVeniceI2V){
     const msel = $("#gen-model-sel");
     msel.innerHTML = "";
@@ -849,7 +868,7 @@ function confirmGen(o, refs){
     cost = hasVid ? "~$0.90/clip (refs + clip discount)" : "~$1.50/clip (reference-to-video)";
   }
   $("#gen-confirm-cost").textContent = "Estimated cost: " + cost;
-  $("#gen-confirm-desc").textContent = o.description + (genOpts.configured ? "" : " — NOTE: fal.ai is not set up yet.");
+  $("#gen-confirm-desc").textContent = o.description + ((genOpts.configured || o.id.startsWith("gpu_")) ? "" : " — NOTE: fal.ai is not set up yet.");
   $("#gen-confirm-refs").innerHTML = (refs && refs.length)
     ? `<div class="grid" style="margin:8px 0">` +
       refs.map(m=>`<div class="thumb sel"><img loading="lazy" src="${m.thumb}">` +
@@ -886,6 +905,24 @@ $("#gen-confirm-yes").addEventListener("click", async ()=>{
   // True-to-reference face lock (single-photo I2V only)
   const fl = $("#gen-facelock");
   if(fl && fl.checked && !refs) payload.face_lock = true;
+  // GPU (RunPod pod) options: pass the parameter block through
+  if(o.id.startsWith("gpu_")){
+    const gp = {};
+    const num = (id)=>{ const el = $(id); if(!el) return undefined;
+      const v = parseFloat(el.value); return isNaN(v) ? undefined : v; };
+    const seed = num("#gpu-seed"), steps = num("#gpu-steps"),
+          cfg = num("#gpu-cfg"), width = num("#gpu-width"),
+          height = num("#gpu-height"), frames = num("#gpu-frames"),
+          denoise = num("#gpu-denoise");
+    if(seed!==undefined) gp.seed = Math.trunc(seed);
+    if(steps!==undefined) gp.steps = Math.trunc(steps);
+    if(cfg!==undefined) gp.cfg = cfg;
+    if(width) gp.width = Math.trunc(width);
+    if(height) gp.height = Math.trunc(height);
+    if(frames!==undefined) gp.frames = Math.trunc(frames);
+    if(denoise!==undefined) gp.denoise = denoise;
+    payload.params = gp;
+  }
   try{
     const r = await api("/api/generate", {method:"POST",
       headers:{"Content-Type":"application/json"},
@@ -1113,7 +1150,7 @@ $("#restyle-go").addEventListener("click", async ()=>{
 });
 
 /* ---------- model replace ---------- */
-let mrBase = null, mrRef = null, mrMode = "ai";
+let mrBase = null, mrRef = null, mrMode = "animate";
 function showModelReplace(){
   ["#gen-list","#gen-confirm","#gen-result","#gen-longvideo","#gen-restyle"].forEach(s=>$(s).classList.add("hidden"));
   const p = $("#gen-modelreplace");
@@ -1139,7 +1176,7 @@ function showModelReplace(){
     b.classList.toggle("sel", b.dataset.mode===mrMode);
     b.addEventListener("click", ()=>{ mrMode = b.dataset.mode; showModelReplace(); });
   });
-  $("#mr-prompt-wrap").classList.toggle("hidden", mrMode==="face");
+  $("#mr-prompt-wrap").classList.toggle("hidden", mrMode!=="ai");
   mrCost();
 }
 function mrCost(){
@@ -1147,9 +1184,13 @@ function mrCost(){
   if(mrMode==="face"){
     c.innerHTML = mrRef && mrRef.type!=="image"
       ? "⚠️ Face mode needs a reference <b>photo</b>."
-      : "Face Replace is <b>FREE</b> and runs on your server — the face comes straight from your reference photo, pixel for pixel.";
+      : "Face Replace is <b>FREE</b> and runs on your server — the face comes straight from your reference photo, pixel for pixel. Everything else in the video is untouched.";
+  }else if(mrMode==="animate"){
+    c.innerHTML = mrRef && mrRef.type!=="image"
+      ? "⚠️ Full-Body Replace needs a reference <b>photo</b> of your model."
+      : "Full-Body Replace (Wan Animate, ~$0.40 per 5s of video): your model takes over the whole performance — same scene, same poses, same motion. The original audio is kept.";
   }else{
-    c.innerHTML = "AI Replace (~$3.00/clip): generative — the AI re-creates the model from your reference. Good for full-body swaps, but it reinterprets rather than copies.";
+    c.innerHTML = "AI Replace (~$3.00/clip): generative — the AI re-creates the model from your reference. It reinterprets rather than copies.";
   }
 }
 $("#mr-back").addEventListener("click", ()=>{
@@ -1159,6 +1200,7 @@ $("#mr-go").addEventListener("click", async ()=>{
   if(!mrBase){ alert("Pick a base video first."); return; }
   if(!mrRef){ alert("Pick a reference photo or video."); return; }
   if(mrMode==="face" && mrRef.type!=="image"){ alert("Face mode needs a reference photo."); return; }
+  if(mrMode==="animate" && mrRef.type!=="image"){ alert("Full-Body Replace needs a reference photo of your model."); return; }
   const box = $("#gen-result");
   box.classList.remove("hidden");
   box.innerHTML = `<div class="spinner"></div>`;
@@ -1168,7 +1210,7 @@ $("#mr-go").addEventListener("click", async ()=>{
                             prompt:$("#mr-prompt").value.trim()})});
     if(r.status==="needs_setup"){ box.innerHTML = `<div class="note">⚠️ ${esc(r.message)}</div>`; return; }
     show("result");
-    $("#result-body").innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">${mrMode==="face"?"Replacing face…":"Replacing model…"}<br>Estimated <b>${esc(r.estimate||"")}</b></p>`;
+    $("#result-body").innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">${mrMode==="face"?"Replacing face…":(mrMode==="animate"?"Swapping in your model…":"Replacing model…")}<br>Estimated <b>${esc(r.estimate||"")}</b></p>`;
     pollJob(r.job_id);
   }catch(e){ box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
 });
@@ -1316,6 +1358,16 @@ onGenTap = function(o){
   if(o.id==="v2v_restyle"){ showRestyle(); return; }
   if(o.id==="long_video"){ showLongVideo(); return; }
   if(o.id==="model_replace"){ showModelReplace(); return; }
+  if(o.id==="gpu_replace"){
+    // Needs BOTH the base video and a reference photo of the new model.
+    pickGenMediaMulti((list)=>{
+      const vid = list.find(m=>m.type==="video");
+      const img = list.find(m=>m.type==="image");
+      if(!vid || !img){ alert("Pick the base video AND a reference photo of the new model."); return; }
+      selected = vid; confirmGen(o, list);
+    });
+    return;
+  }
   _onGenTap(o);
 };
 
