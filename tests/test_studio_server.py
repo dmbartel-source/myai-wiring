@@ -666,3 +666,96 @@ def test_run_seedvr2_finish_roundtrip(tmp_path):
     assert seen["up"] == src
     assert seen["name"] == "up_stitched.mp4"
     assert seen["kw"]["resolution"] == 1024
+
+
+# ------------------------------------------------- face lock reporting ----
+
+def _longvideo_job_env(tmp_path, monkeypatch):
+    """Point the server's dirs at tmp and stub out Venice."""
+    up = tmp_path / "uploads"
+    res = tmp_path / "jobs"
+    up.mkdir()
+    res.mkdir()
+    monkeypatch.setattr(ss, "UPLOAD_DIR", str(up))
+    monkeypatch.setattr(ss, "RESULTS_DIR", str(res))
+    monkeypatch.setattr(ss, "JOBS_LOG", str(res / "jobs.jsonl"))
+    (up / "ref.jpg").write_bytes(b"\xff\xd8\xff" + b"0" * 64)
+    (up / "base.jpg").write_bytes(b"\xff\xd8\xff" + b"0" * 64)
+
+    class FakeVC:
+        DEFAULT_QUALITY = "standard"
+        QUALITY_LEVELS = {"standard": {"resolution": "720p", "crf": 20,
+                                       "preset": "medium"}}
+
+        @staticmethod
+        def file_to_data_url(path):
+            return "data:image/jpeg;base64,STUB"
+
+    monkeypatch.setattr(ss, "vc", FakeVC)
+
+
+def _fake_chain_returning(kwargs_seen):
+    def fake_run_chain(**kwargs):
+        kwargs_seen.update(kwargs)
+        out = os.path.join(kwargs["workdir"], "longvideo_final.mp4")
+        os.makedirs(kwargs["workdir"], exist_ok=True)
+        _make_mp4(out)
+        return out
+    return fake_run_chain
+
+
+def _longvideo_params():
+    return {"beats": ["she walks in", "she sits down"],
+            "clip_duration_s": 15.0,
+            "quality": "standard",
+            "chain_mode": "lastframe",
+            "face_lock": True,
+            "ref_image": "ref.jpg"}
+
+
+@NEEDS_FFMPEG
+def test_longvideo_face_lock_failure_is_surfaced(tmp_path, monkeypatch):
+    """A failed face lock must not pass silently: the finished job
+    carries the failure in its phase and a warning field, and the
+    unlocked result is what ships."""
+    _longvideo_job_env(tmp_path, monkeypatch)
+    seen = {}
+    monkeypatch.setattr(ss.lv, "run_chain", _fake_chain_returning(seen))
+
+    def bad_lock(*a, **k):
+        raise RuntimeError("no face detected in reference photo")
+
+    monkeypatch.setattr(ss, "_face_lock", bad_lock)
+    job_id = ss.JOBS.new("base.jpg", "longvideo", "longvideo",
+                         _longvideo_params())
+    ss._run_job(job_id)
+    job = ss.JOBS.get(job_id)
+    assert job["status"] == "done", job
+    assert "face lock FAILED" in (job.get("phase") or "")
+    assert "face lock FAILED" in (job.get("warning") or "")
+    assert job["result_name"].endswith("_longvideo.mp4")
+    # The per-clip lock was wired into the chain.
+    assert seen.get("clip_lock_fn") is not None
+
+
+@NEEDS_FFMPEG
+def test_longvideo_face_lock_success_reports_plain_done(tmp_path,
+                                                        monkeypatch):
+    """A successful lock keeps the plain 'done' phase, no warning, and
+    ships the locked result file."""
+    _longvideo_job_env(tmp_path, monkeypatch)
+    seen = {}
+    monkeypatch.setattr(ss.lv, "run_chain", _fake_chain_returning(seen))
+
+    def ok_lock(video, ref, out, workdir):
+        shutil.copy2(video, out)
+
+    monkeypatch.setattr(ss, "_face_lock", ok_lock)
+    job_id = ss.JOBS.new("base.jpg", "longvideo", "longvideo",
+                         _longvideo_params())
+    ss._run_job(job_id)
+    job = ss.JOBS.get(job_id)
+    assert job["status"] == "done", job
+    assert job.get("phase") == "done"
+    assert not job.get("warning")
+    assert job["result_name"].endswith("_longvideo_facelock.mp4")
