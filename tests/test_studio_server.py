@@ -632,3 +632,37 @@ def test_run_scail_chunks_chains_and_stitches(tmp_path, monkeypatch):
     assert builds[1]["previous_frames_video"] == "up_anchor_000.mp4"
     assert builds[2]["previous_frames_video"] == "up_anchor_001.mp4"
     assert len(calls["run"]) == 3
+
+
+def test_run_seedvr2_finish_roundtrip(tmp_path):
+    """SeedVR2 finish: uploads the stitched video, runs the
+    standalone upscale graph at 1024, returns the pod output."""
+    seen = {}
+
+    class FakeGC:
+        def upload_video(self, path):
+            seen["up"] = path
+            return "up_stitched.mp4"
+
+        def run_workflow(self, wf, jobdir, **kw):
+            seen["wf"] = wf
+            seen["jobdir"] = jobdir
+            os.makedirs(jobdir, exist_ok=True)
+            out = os.path.join(jobdir, "finished.mp4")
+            open(out, "wb").write(b"x")
+            return [out]
+
+    class FakeGW:
+        def video_seedvr2_upscale(self, name, **kw):
+            seen["name"] = name
+            seen["kw"] = kw
+            return {"wf": True}
+
+    jobdir = str(tmp_path)
+    src = os.path.join(jobdir, "stitched.mp4")
+    open(src, "wb").write(b"x")
+    out = ss._run_seedvr2_finish(FakeGC(), FakeGW(), jobdir, src)
+    assert os.path.basename(out) == "finished.mp4"
+    assert seen["up"] == src
+    assert seen["name"] == "up_stitched.mp4"
+    assert seen["kw"]["resolution"] == 1024
