@@ -231,7 +231,9 @@ footer.hint{text-align:center; color:var(--faint); font-size:12.5px; padding:20p
   <section id="screen-library" class="screen">
     <button class="bigbtn" id="btn-pick">Upload Photos / Videos</button>
     <input type="file" id="file-input" accept="image/*,video/*,.mkv,.avi,.flv,.wmv,.ts,.m2ts,.mpg,.mpeg,.3gp,.ogv,.avif" multiple class="hidden">
-    <div class="note">Files stay on your private server. Nothing is sent anywhere.</div>
+    <button class="bigbtn ghost" id="btn-pick-files">Upload from Files / Downloads</button>
+    <input type="file" id="file-input-any" accept="*/*" multiple class="hidden">
+    <div class="note">Files stay on your private server. Nothing is sent anywhere. Videos saved from the internet live in <b>Downloads</b> — use the Files button for those.</div>
     <div id="upload-list"></div>
     <div style="display:flex;gap:8px;margin:12px 0;align-items:center">
       <div id="lib-filters" style="display:flex;gap:8px;flex:1">
@@ -445,12 +447,15 @@ async function api(path, opts){
 
 /* ---------- upload ---------- */
 $("#btn-pick").addEventListener("click", ()=> $("#file-input").click());
-$("#file-input").addEventListener("change", async e=>{
+$("#btn-pick-files").addEventListener("click", ()=> $("#file-input-any").click());
+async function handlePickedFiles(e){
   const files = [...e.target.files];
   e.target.value = "";
   for(const f of files) await uploadOne(f);
   loadGallery();
-});
+}
+$("#file-input").addEventListener("change", handlePickedFiles);
+$("#file-input-any").addEventListener("change", handlePickedFiles);
 async function uploadOne(f){
   const box = document.createElement("div");
   box.className = "upitem";
