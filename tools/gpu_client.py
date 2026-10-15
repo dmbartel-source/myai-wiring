@@ -194,6 +194,14 @@ def _request(
     """
     url = f"{get_base_url()}{path}"
     req = urllib.request.Request(url, data=data, method=method)
+    # RunPod's proxy sits behind Cloudflare, which bans the default
+    # Python-urllib signature (HTTP 403, error 1010 — seen live
+    # Oct 14 2026). Present as a normal browser client.
+    req.add_header(
+        "User-Agent",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+    req.add_header("Accept", "*/*")
     key = get_api_key()
     if key:
         req.add_header("Authorization", f"Bearer {key}")
