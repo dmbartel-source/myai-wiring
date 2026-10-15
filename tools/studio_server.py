@@ -2046,9 +2046,10 @@ class StudioHandler(BaseHTTPRequestHandler):
             ref_images = list(body.get("reference_images") or [])
             ref_videos = [n for n in (body.get("reference_videos") or [])
                           if n and n != base_name]
-            # Up to 4 reference photos (tiled into one sheet on the
-            # pod path) OR a single reference video (frame-extracted).
-            ref_names = ref_images[:4] if ref_images else ref_videos[:1]
+            # Up to 4 references in any mix: a reference video
+            # contributes one extracted still frame and photos join
+            # it in the sheet (tiled together on the pod path).
+            ref_names = (ref_videos[:1] + ref_images)[:4]
             if not base_name or safe_media_path(base_name) is None:
                 self._send_json({"error": "pick a base video"}, 400)
                 return
