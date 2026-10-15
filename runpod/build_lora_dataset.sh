@@ -20,6 +20,11 @@
 # Ends with: DATASET-STAGE1-DONE
 set -e
 cd /workspace
+# The pod image sets HF_HUB_ENABLE_HF_TRANSFER=1 but the tuner venv
+# has no hf_transfer package, which makes every huggingface_hub
+# call (hf download, tokenizer fetches) die with a ValueError.
+# Force the plain HTTP path for this script and all its children.
+export HF_HUB_ENABLE_HF_TRANSFER=0
 TUNER=/workspace/SCAIL-2-Tuner
 PY=$TUNER/.venv/bin/python
 DIT=/workspace/ComfyUI/models/diffusion_models/wan2.1_14B_SCAIL_2_fp16.safetensors
