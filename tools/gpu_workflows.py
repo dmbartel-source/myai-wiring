@@ -66,7 +66,7 @@ MODELS = {
     "scail_unet": "wan2.1_14B_SCAIL_2_fp8_scaled.safetensors",
     "scail_dpo_lora": "wan2.1_SCAIL_2_DPO_lora_bf16.safetensors",
     "scail_lightx2v_lora":
-        "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+        "lightx2v_I2V_14B_480p_cfg_step_distill_rank128_bf16.safetensors",
     "clip_vision_h": "clip_vision_h.safetensors",
 }
 
