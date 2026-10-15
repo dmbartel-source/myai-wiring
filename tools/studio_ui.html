@@ -332,7 +332,8 @@ footer.hint{text-align:center; color:var(--faint); font-size:12.5px; padding:20p
       <div id="mr-ref-sel"></div>
       <h2 class="sec">Method</h2>
       <div id="mr-mode" class="qsel">
-        <button data-mode="animate" class="qbtn sel">Full-Body Replace (Wan Animate) — whole model swapped in, same scene, pose &amp; motion · ~$0.40/5s</button>
+        <button data-mode="combo" class="qbtn sel">Best Match — Full-Body + Face Lock · ~$0.40/5s — generative body match, then your photo's real face composited in free. Least drift possible.</button>
+        <button data-mode="animate" class="qbtn">Full-Body Replace (Wan Animate) — whole model swapped in, same scene, pose &amp; motion · ~$0.40/5s</button>
         <button data-mode="ai" class="qbtn">AI Replace (~$3.00) — generative, photo or video reference</button>
         <button data-mode="face" class="qbtn">Face Replace (FREE, local) — face only, everything else pixel-identical</button>
       </div>
@@ -1173,7 +1174,7 @@ $("#restyle-go").addEventListener("click", async ()=>{
 });
 
 /* ---------- model replace ---------- */
-let mrBase = null, mrRef = null, mrMode = "animate";
+let mrBase = null, mrRef = null, mrMode = "combo";
 function showModelReplace(){
   ["#gen-list","#gen-confirm","#gen-result","#gen-longvideo","#gen-restyle"].forEach(s=>$(s).classList.add("hidden"));
   const p = $("#gen-modelreplace");
@@ -1208,6 +1209,10 @@ function mrCost(){
     c.innerHTML = mrRef && mrRef.type!=="image"
       ? "⚠️ Face mode needs a reference <b>photo</b>."
       : "Face Replace is <b>FREE</b> and runs on your server — the face comes straight from your reference photo, pixel for pixel. Everything else in the video is untouched.";
+  }else if(mrMode==="combo"){
+    c.innerHTML = mrRef && mrRef.type!=="image"
+      ? "⚠️ Best Match needs a reference <b>photo</b> of your model."
+      : "Best Match (~$0.40 per 5s of video + free face lock): Wan Animate swaps in your model's body with the same scene, poses and motion — then your photo's <b>real face</b> is composited over the result, so the face is pixel-true and drift is minimal. Original audio is kept.";
   }else if(mrMode==="animate"){
     c.innerHTML = mrRef && mrRef.type!=="image"
       ? "⚠️ Full-Body Replace needs a reference <b>photo</b> of your model."
@@ -1224,6 +1229,7 @@ $("#mr-go").addEventListener("click", async ()=>{
   if(!mrRef){ alert("Pick a reference photo or video."); return; }
   if(mrMode==="face" && mrRef.type!=="image"){ alert("Face mode needs a reference photo."); return; }
   if(mrMode==="animate" && mrRef.type!=="image"){ alert("Full-Body Replace needs a reference photo of your model."); return; }
+  if(mrMode==="combo" && mrRef.type!=="image"){ alert("Best Match needs a reference photo of your model."); return; }
   const box = $("#gen-result");
   box.classList.remove("hidden");
   box.innerHTML = `<div class="spinner"></div>`;
@@ -1233,7 +1239,7 @@ $("#mr-go").addEventListener("click", async ()=>{
                             prompt:$("#mr-prompt").value.trim()})});
     if(r.status==="needs_setup"){ box.innerHTML = `<div class="note">⚠️ ${esc(r.message)}</div>`; return; }
     show("result");
-    $("#result-body").innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">${mrMode==="face"?"Replacing face…":(mrMode==="animate"?"Swapping in your model…":"Replacing model…")}<br>Estimated <b>${esc(r.estimate||"")}</b></p>`;
+    $("#result-body").innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">${mrMode==="face"?"Replacing face…":(mrMode==="combo"?"Swapping model + locking face…":(mrMode==="animate"?"Swapping in your model…":"Replacing model…"))}<br>Estimated <b>${esc(r.estimate||"")}</b></p>`;
     pollJob(r.job_id);
   }catch(e){ box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
 });
