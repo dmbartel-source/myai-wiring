@@ -230,7 +230,7 @@ footer.hint{text-align:center; color:var(--faint); font-size:12.5px; padding:20p
   <!-- LIBRARY (uploads + outputs) -->
   <section id="screen-library" class="screen">
     <button class="bigbtn" id="btn-pick">Upload Photos / Videos</button>
-    <input type="file" id="file-input" accept="image/*,video/*" multiple class="hidden">
+    <input type="file" id="file-input" accept="image/*,video/*,.mkv,.avi,.flv,.wmv,.ts,.m2ts,.mpg,.mpeg,.3gp,.ogv,.avif" multiple class="hidden">
     <div class="note">Files stay on your private server. Nothing is sent anywhere.</div>
     <div id="upload-list"></div>
     <div style="display:flex;gap:8px;margin:12px 0;align-items:center">
@@ -462,10 +462,28 @@ async function uploadOne(f){
     const x = new XMLHttpRequest();
     x.open("POST", "/api/upload");
     x.upload.onprogress = ev=>{ if(ev.lengthComputable) bar.style.width = (100*ev.loaded/ev.total)+"%"; };
-    x.onload = ()=> x.status===200 ? res() : rej(new Error("upload failed"));
-    x.onerror = ()=> rej(new Error("upload failed"));
+    x.onload = ()=>{
+      if(x.status===200){
+        try{
+          const r = JSON.parse(x.responseText||"{}");
+          if(r.rejected && r.rejected.length && !(r.saved||[]).length){
+            rej(new Error(r.rejected[0].name + ": " + r.rejected[0].reason));
+            return;
+          }
+        }catch(e){ /* non-JSON 200: treat as success */ }
+        res();
+      }else{
+        let msg = "upload failed (server " + x.status + ")";
+        try{
+          const r = JSON.parse(x.responseText||"{}");
+          if(r.error) msg = r.error;
+        }catch(e){ /* keep generic message */ }
+        rej(new Error(msg));
+      }
+    };
+    x.onerror = ()=> rej(new Error("upload failed — connection dropped"));
     x.send(fd);
-  }).catch(err=>{ box.innerHTML = `<div class="err">${esc(err.message)}</div>`; });
+  }).catch(err=>{ box.innerHTML = `<div class="err">${esc(f.name)} — ${esc(err.message)}</div>`; });
   bar.style.width = "100%";
 }
 function esc(s){ return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
