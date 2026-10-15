@@ -352,6 +352,7 @@ footer.hint{text-align:center; color:var(--faint); font-size:12.5px; padding:20p
       <h2 class="sec">Reference model — up to 4 photos, or 1 video</h2>
       <div id="gr-ref-sel"></div>
       <div id="gr-cost" class="note"></div>
+      <textarea id="gr-prompt" rows="2" placeholder="Optional: describe the result (e.g. 'fully nude, long dark wavy hair'). Blank = standard identity prompt."></textarea>
       <button class="bigbtn" id="gr-go">Replace Model on Your GPU</button>
       <button class="bigbtn ghost" id="gr-back">Back</button>
     </div>
@@ -1295,7 +1296,7 @@ $("#gr-go").addEventListener("click", async ()=>{
   box.classList.remove("hidden");
   box.innerHTML = `<div class="spinner"></div>`;
   try{
-    const payload = {id:"gpu_replace", prompt:"", media:grBase.name,
+    const payload = {id:"gpu_replace", prompt:($("#gr-prompt").value || "").trim(), media:grBase.name,
       reference_images: grRefs.filter(m=>m.type==="image").map(m=>m.name),
       reference_videos: grRefs.filter(m=>m.type==="video").map(m=>m.name)};
     const r = await api("/api/generate", {method:"POST", headers:{"Content-Type":"application/json"},
