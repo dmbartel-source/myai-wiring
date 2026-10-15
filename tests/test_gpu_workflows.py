@@ -325,6 +325,32 @@ def test_video_replace_model_scail_graph():
     assert wf["48"]["inputs"]["left"] == 5
 
 
+def test_video_replace_model_scail_relight_chain():
+    wf = gw.video_replace_model_scail("v.mp4", "r.jpg")
+    # Relight LoRA sits between DPO and the sampling node.
+    assert wf["51"]["class_type"] == "LoraLoaderModelOnly"
+    assert wf["51"]["inputs"]["model"] == ["6", 0]
+    assert wf["7"]["inputs"]["model"] == ["51", 0]
+    off = gw.video_replace_model_scail("v.mp4", "r.jpg",
+                                       relight_strength=0.0)
+    assert "51" not in off
+    assert off["7"]["inputs"]["model"] == ["6", 0]
+
+
+def test_video_replace_model_scail_continuation():
+    wf = gw.video_replace_model_scail(
+        "v.mp4", "r.jpg", previous_frames_video="anchor.mp4",
+        frame_offset=76)
+    assert_links_valid(wf)
+    assert wf["50"]["class_type"] == "VHS_LoadVideo"
+    assert wf["20"]["inputs"]["previous_frames"] == ["50", 0]
+    assert wf["20"]["inputs"]["video_frame_offset"] == 76
+    assert wf["20"]["inputs"]["previous_frame_count"] == 5
+    plain = gw.video_replace_model_scail("v.mp4", "r.jpg")
+    assert "50" not in plain
+    assert "previous_frames" not in plain["20"]["inputs"]
+
+
 def test_video_replace_model_scail_union_mode():
     wf = gw.video_replace_model_scail("v.mp4", "r.jpg", zoned=False)
     assert_links_valid(wf)
