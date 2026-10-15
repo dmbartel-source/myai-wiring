@@ -88,4 +88,19 @@ nohup .venv/bin/accelerate launch --num_cpu_threads_per_process 1 \
   > /workspace/lora_train.log 2>&1 &
 echo "TRAINING LAUNCHED pid $! — watch /workspace/lora_train.log"
 echo "Checkpoints land in /workspace/lora_out (skswoman*.safetensors)."
+
+# Post-training: once the trainer exits, install the finished LoRA
+# into ComfyUI's loras folder so the Studio Person LoRA toggle can
+# load it. Runs detached; logs to lora_stage2.log.
+(
+  while pgrep -f scail2_train_network > /dev/null; do sleep 30; done
+  f=/workspace/lora_out/skswoman.safetensors
+  [ -f "$f" ] || f=$(ls -t /workspace/lora_out/skswoman*.safetensors 2>/dev/null | head -1)
+  if [ -n "$f" ] && [ -f "$f" ]; then
+    cp "$f" /workspace/ComfyUI/models/loras/skswoman.safetensors
+    echo "LORA INSTALLED from $f" >> /workspace/lora_stage2.log
+  else
+    echo "LORA INSTALL FAILED: no checkpoint in /workspace/lora_out" >> /workspace/lora_stage2.log
+  fi
+) &
 echo "STAGE2-DONE"
