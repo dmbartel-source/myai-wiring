@@ -705,6 +705,39 @@ def _mux_audio(silent_video: str, audio_source: str, out_path: str) -> str:
     return out_path
 
 
+def _largest_face_crop_box(img_w: int, img_h: int, boxes):
+    """Crop box (x0, y0, x1, y1) around the largest detected face,
+    with ~45% margin, clamped to the image. None when no boxes."""
+    if not boxes:
+        return None
+    x, y, w, h = max(boxes, key=lambda b: b[2] * b[3])
+    mx, my = int(w * 0.45), int(h * 0.45)
+    return (max(0, x - mx), max(0, y - my),
+            min(img_w, x + w + mx), min(img_h, y + h + my))
+
+
+def _ref_face_crop(ref_photo_path: str):
+    """The reference's FACE CROP (BGR array).
+
+    face_vfx.composite_face is contracted for a face crop; feeding it
+    a full photo warps the ENTIRE picture into the target face oval --
+    the floating 'bubble with the whole figure' artifact. Raises when
+    no face can be found (callers fall back to the un-locked video).
+    """
+    if fv is None:
+        raise RuntimeError("face_vfx module not available")
+    import cv2 as _cv2
+    img = _cv2.imread(ref_photo_path)
+    if img is None:
+        raise RuntimeError("could not read reference photo")
+    box = _largest_face_crop_box(img.shape[1], img.shape[0],
+                                 fv.detect_faces(img))
+    if box is None:
+        raise RuntimeError("no face detected in reference photo")
+    x0, y0, x1, y1 = box
+    return img[y0:y1, x0:x1]
+
+
 def _face_lock(video_path: str, ref_photo_path: str, out_path: str,
                workdir: str) -> str:
     """Composite the reference photo's face onto every frame of a video.
@@ -716,10 +749,7 @@ def _face_lock(video_path: str, ref_photo_path: str, out_path: str,
     """
     if fv is None:
         raise RuntimeError("face_vfx module not available")
-    import cv2 as _cv2
-    src_face = _cv2.imread(ref_photo_path)
-    if src_face is None:
-        raise RuntimeError("could not read reference photo")
+    src_face = _ref_face_crop(ref_photo_path)
     silent = os.path.join(workdir, "_facelock_silent.mp4")
     fv.replace_in_video(video_path, src_face, silent)
     # OpenCV writes MPEG-4 Part 2 ("mp4v"), which phone and browser
