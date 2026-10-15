@@ -747,6 +747,8 @@ def _run_job(job_id: str) -> None:
                     "resolution": q["resolution"],
                     "image_url": a.get("image_url"),
                 }
+                if a.get("negative_prompt"):
+                    submit_args["negative_prompt"] = a["negative_prompt"]
                 # Seedance R2V: pass original reference images every clip
                 # for character consistency, in addition to the last frame.
                 if mid == "venice-seedance-r2v" and _r2v_ref_url:
