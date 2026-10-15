@@ -36,6 +36,11 @@ fi
 VPY="$VENV/bin/python"
 "$VPY" --version
 UPIP() { uv pip install --python "$VPY" "$@"; }
+UPIP_NBI() { uv pip install --python "$VPY" --no-build-isolation "$@"; }
+# uv venvs ship without pip/setuptools; several packages in this stack
+# (chumpy, the CUDA extensions) build from source and import them.
+echo "--- seeding pip/setuptools/wheel into the venv"
+UPIP pip setuptools wheel || fail "seed pip/setuptools"
 
 # CUDA_HOME for the compiled extensions (pointops / rasterizer / simple-knn)
 if [ -z "${CUDA_HOME:-}" ]; then
@@ -65,7 +70,7 @@ cd "$REPO" || fail "cd repo"
 
 # ---------- python deps ----------
 echo "--- requirements.txt + extras"
-UPIP -r requirements.txt || fail "requirements"
+UPIP_NBI -r requirements.txt || fail "requirements"
 UPIP "rembg[cpu]" spconv-cu121 || fail "extras"
 echo "--- prebuilt wheels (torch_scatter / pytorch3d / gsplat)"
 UPIP "https://data.pyg.org/whl/torch-2.3.0%2Bcu121/torch_scatter-2.1.2%2Bpt23cu121-cp310-cp310-linux_x86_64.whl" || fail "torch_scatter"
@@ -76,8 +81,8 @@ echo "--- compiled extensions"
 if ! "$VPY" -c "import pointops" 2>/dev/null; then
   ( cd lib/pointops && "$VPY" setup.py install ) || fail "pointops build"
 fi
-UPIP "git+https://github.com/ashawkey/diff-gaussian-rasterization/" || fail "diff-gaussian-rasterization"
-UPIP "git+https://github.com/camenduru/simple-knn/" || fail "simple-knn"
+UPIP_NBI "git+https://github.com/ashawkey/diff-gaussian-rasterization/" || fail "diff-gaussian-rasterization"
+UPIP_NBI "git+https://github.com/camenduru/simple-knn/" || fail "simple-knn"
 
 # ---------- weights (priors incl. SMPL-X human_model_files + LHMPP-700M) ----------
 echo "--- downloading weights (one-click script; HF first, ModelScope fallback)"
