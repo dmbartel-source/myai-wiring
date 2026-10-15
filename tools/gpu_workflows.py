@@ -65,6 +65,7 @@ MODELS = {
     # no erase-to-black. fp8 build (17.7 GB) fits beside the VACE set.
     "scail_unet": "wan2.1_14B_SCAIL_2_fp8_scaled.safetensors",
     "scail_dpo_lora": "wan2.1_SCAIL_2_DPO_lora_bf16.safetensors",
+    "scail_relight_lora": "wan2.1_SCAIL_2_relight_lora_bf16.safetensors",
     "scail_lightx2v_lora":
         "lightx2v_I2V_14B_480p_cfg_step_distill_rank128_bf16.safetensors",
     "clip_vision_h": "clip_vision_h.safetensors",
@@ -552,6 +553,10 @@ def video_replace_model_scail(
     partner_threshold: float = 0.55,
     contact_reach: int = 24,
     contact_pad: int = 16,
+    previous_frames_video: str | None = None,
+    frame_offset: int = 0,
+    previous_frame_count: int = 5,
+    relight_strength: float = 1.0,
     sort_by: str = "left_to_right",
     pose_strength: float = 1.0,
     shift: float = 8.0,
@@ -650,8 +655,9 @@ def video_replace_model_scail(
                           "batch_size": 1,
                           "pose_strength": float(pose_strength),
                           "pose_start": 0.0, "pose_end": 1.0,
-                          "video_frame_offset": 0,
-                          "previous_frame_count": 5,
+                          "video_frame_offset": int(frame_offset),
+                          "previous_frame_count":
+                              int(previous_frame_count),
                           "pose_video": ["2", 0],
                           "pose_video_mask": ["17", 0],
                           "replacement_mode": True,
@@ -672,6 +678,16 @@ def video_replace_model_scail(
         "24": {"class_type": "VAEDecode",
                "inputs": {"samples": ["23", 0], "vae": ["11", 0]}},
     }
+    if relight_strength:
+        # Vendor Relighting LoRA: the quality recipe pairs it with
+        # DPO at the 24-step profile; it targets SCAIL-2's lighting
+        # mismatch (a contributor to the visible seam). Sits after
+        # DPO in the chain, before sampling.
+        wf["51"] = {"class_type": "LoraLoaderModelOnly",
+                    "inputs": {"model": ["6", 0],
+                               "lora_name": MODELS["scail_relight_lora"],
+                               "strength_model": float(relight_strength)}}
+        wf["7"]["inputs"]["model"] = ["51", 0]
     # Hero reference (v2): the reference model composited into an
     # actual frame of the source at the original performer's exact
     # place and scale. SCAIL-2 takes size/placement cues from the
@@ -716,6 +732,22 @@ def video_replace_model_scail(
                                "method": "reinhard", "strength": 1.0,
                                "multithread": True}}
         gen = ["35", 0]
+    if previous_frames_video:
+        # Continuation chunk (long-video chaining): the previous
+        # chunk's decoded tail anchors this chunk so the join is
+        # seamless -- SCAIL-2 was trained with a 5-frame anchor on
+        # 81-frame chunks. The server uploads the anchor as a short
+        # clip at render size.
+        wf["50"] = {"class_type": "VHS_LoadVideo",
+                    "inputs": {"video": previous_frames_video,
+                               "force_rate": float(fps),
+                               "custom_width": 0, "custom_height": 0,
+                               "frame_load_cap":
+                                   int(previous_frame_count),
+                               "skip_first_frames": 0,
+                               "select_every_nth": 1,
+                               "format": "AnimateDiff"}}
+        wf["20"]["inputs"]["previous_frames"] = ["50", 0]
     final = gen
     if composite and zoned:
         # Zoned finish (David's requirement, Oct 15): the room, the
