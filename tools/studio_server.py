@@ -57,6 +57,11 @@ except ImportError:
     lv = None
 
 try:
+    import face_vfx as fv
+except ImportError:
+    fv = None
+
+try:
     import venice_client as vc
 except ImportError:
     vc = None
@@ -215,6 +220,17 @@ GENERATE_OPTIONS = [
                      "mood, reimagine. Uncensored Wan 2.7 available."),
      "needs_media": "video",
      "needs_prompt": True,
+     "paid": True},
+    {"id": "model_replace",
+     "name": "Replace Model in Video",
+     "badge": "$",
+     "cost": "AI ~$3.00/clip · Face FREE",
+     "description": ("Put a different model into an existing video. Pick "
+                     "the base video, then a reference photo or reference "
+                     "video of the new model. AI does full-body swaps; "
+                     "Face mode is free/local and swaps just the face."),
+     "needs_media": "video",
+     "needs_prompt": False,
      "paid": True},
     {"id": "long_video",
      "name": "Long Video (Chained, minutes)",
@@ -553,6 +569,83 @@ def _run_job(job_id: str) -> None:
                         result_url=f"/api/result/{job_id}/{result_name}",
                         result_name=result_name)
             return
+        elif kind == "face_replace":
+            # Local face replacement: base video + reference photo.
+            # Uses face_vfx.replace_in_video (OpenCV tracking + Poisson
+            # blend), then muxes the original audio back with ffmpeg.
+            if fv is None:
+                raise RuntimeError("face_vfx module not available")
+            p = job["params"]
+            ref_path = safe_media_path(p.get("ref_media", ""))
+            if ref_path is None:
+                raise RuntimeError("reference photo disappeared")
+            import cv2 as _cv2
+            src_face = _cv2.imread(ref_path)
+            if src_face is None:
+                raise RuntimeError("could not read reference photo")
+            JOBS.update(job_id, status="running", progress=30,
+                        phase="replacing face (local)")
+            silent = os.path.join(jobdir, f"{base}_facereplace_silent.mp4")
+            fv.replace_in_video(mpath, src_face, silent)
+            # Mux original audio back (replace_in_video drops audio).
+            result_name = f"{base}_facereplace.mp4"
+            out_path = os.path.join(jobdir, result_name)
+            import subprocess as _sp
+            r = _sp.run(
+                ["ffmpeg", "-y", "-i", silent, "-i", mpath,
+                 "-map", "0:v:0", "-map", "1:a:0?", "-c:v", "copy",
+                 "-c:a", "aac", "-shortest", out_path],
+                capture_output=True, text=True, timeout=600)
+            if r.returncode != 0 or not os.path.isfile(out_path):
+                # No audio in source or mux failed — use silent output.
+                import shutil as _sh3
+                _sh3.copy2(silent, out_path)
+            JOBS.update(job_id, status="done", progress=100,
+                        phase="done",
+                        result_url=f"/api/result/{job_id}/{result_name}",
+                        result_name=result_name)
+            return
+        elif kind == "model_replace":
+            # AI model replacement via Venice Seedance R2V: base video is
+            # the performance; reference photo/video defines the model.
+            if vc is None:
+                raise RuntimeError("venice_client not available")
+            p = job["params"]
+            ref_path = safe_media_path(p.get("ref_media", ""))
+            if ref_path is None:
+                raise RuntimeError("reference media disappeared")
+            ref_type = media_type(p.get("ref_media", ""))
+            prompt = p.get("prompt", "")
+            quality = p.get("quality") or vc.DEFAULT_QUALITY
+            q = vc.QUALITY_LEVELS[quality]
+            duration_s = float(p.get("duration_s", 5.0))
+            JOBS.update(job_id, status="running", progress=10,
+                        phase="submitting to Venice")
+            args = {
+                "prompt": prompt,
+                "duration": duration_s,
+                "resolution": q["resolution"],
+                "reference_video_urls": [vc.file_to_data_url(mpath)],
+                "omni_reference_task_type": "edit",
+            }
+            if ref_type == "image":
+                args["reference_image_urls"] = [vc.file_to_data_url(ref_path)]
+            elif ref_type == "video":
+                args["reference_video_urls"].append(
+                    vc.file_to_data_url(ref_path))
+            vjob = vc.submit("venice-seedance-r2v", args)
+            JOBS.update(job_id, status="running", progress=30,
+                        phase="Venice is rendering")
+            url = vc.wait(vjob, timeout_s=1200.0, poll_interval_s=15.0)
+            JOBS.update(job_id, status="running", progress=90,
+                        phase="downloading result")
+            result_name = f"{base}_modelreplace.mp4"
+            vc.download_to_file(url, os.path.join(jobdir, result_name))
+            JOBS.update(job_id, status="done", progress=100,
+                        phase="done",
+                        result_url=f"/api/result/{job_id}/{result_name}",
+                        result_name=result_name)
+            return
         elif kind == "longvideo":
             # Chained minutes-long video. See longvideo.py for the
             # continuity design (last-frame conditioning + beat prompts).
@@ -809,6 +902,8 @@ class StudioHandler(BaseHTTPRequestHandler):
             self._api_generate()
         elif parsed.path == "/api/v2v":
             self._api_v2v()
+        elif parsed.path == "/api/model_replace":
+            self._api_model_replace()
         elif parsed.path == "/api/longvideo":
             self._api_longvideo()
         elif parsed.path == "/api/segment_prompt":
@@ -1337,6 +1432,88 @@ class StudioHandler(BaseHTTPRequestHandler):
         job_id = JOBS.new(media, "v2v_generate", model_id, {
             "prompt": prompt, "quality": quality,
             "resolution": q["resolution"],
+            "duration_s": duration_s,
+        })
+        POOL.submit(_run_job, job_id)
+        self._send_json({"job_id": job_id, "status": "started",
+                         "estimate": f"~${est:.2f}/clip ({quality})"})
+
+    def _api_model_replace(self):
+        """POST /api/model_replace {media, ref_media, mode, prompt, quality}
+
+        Replace the model in a base video with a reference model.
+          media:     base video (the performance to keep)
+          ref_media: reference photo OR reference video (the new model)
+          mode:      "face" = local face replacement (free, photo only)
+                     "ai"   = Venice Seedance R2V replacement (paid)
+        -> {job_id, estimate}
+        """
+        body = self._read_json()
+        if not body:
+            self._send_json({"error": "invalid JSON body"}, 400)
+            return
+        media = body.get("media", "")
+        ref_media = body.get("ref_media", "")
+        mode = body.get("mode", "ai")
+        prompt = (body.get("prompt") or "").strip()
+        if mode not in ("face", "ai"):
+            self._send_json({"error": f"unknown mode {mode!r}"}, 400)
+            return
+        mpath = safe_media_path(media)
+        if mpath is None:
+            self._send_json({"error": f"media {media!r} not found"}, 404)
+            return
+        if media_type(media) != "video":
+            self._send_json({"error": "base media must be a video"}, 400)
+            return
+        rpath = safe_media_path(ref_media)
+        if rpath is None:
+            self._send_json({"error": f"reference {ref_media!r} not found"},
+                            404)
+            return
+        ref_type = media_type(ref_media)
+        if mode == "face":
+            if fv is None:
+                self._send_json(
+                    {"error": "face replacement not available on server"},
+                    500)
+                return
+            if ref_type != "image":
+                self._send_json(
+                    {"error": "face replacement needs a reference photo"},
+                    400)
+                return
+            job_id = JOBS.new(media, "face_replace", "local", {
+                "ref_media": ref_media,
+            })
+            POOL.submit(_run_job, job_id)
+            self._send_json({"job_id": job_id, "status": "started",
+                             "estimate": "$0 (local)"})
+            return
+        # AI mode (Venice Seedance R2V)
+        ok, msg = self._venice_key_or_setup()
+        if not ok:
+            self._send_json({"status": "needs_setup", "message": msg})
+            return
+        if ref_type not in ("image", "video"):
+            self._send_json(
+                {"error": "reference must be a photo or video"}, 400)
+            return
+        quality = body.get("quality") or vc.DEFAULT_QUALITY
+        if quality not in vc.QUALITY_LEVELS:
+            self._send_json({"error": f"unknown quality {quality!r}"}, 400)
+            return
+        spec = vc.VENICE_MODELS["venice-seedance-r2v"]
+        duration_s = float(body.get("duration_s")
+                           or spec.get("default_duration_s", 10.0))
+        duration_s = min(duration_s, float(spec.get("max_duration_s", 15.0)))
+        est = round(spec["cost_per_s"] * duration_s, 2)
+        job_id = JOBS.new(media, "model_replace", "venice-seedance-r2v", {
+            "ref_media": ref_media,
+            "prompt": prompt or ("Replace the person in this video with "
+                                 "the person from the reference, keeping "
+                                 "the same actions and scene."),
+            "quality": quality,
             "duration_s": duration_s,
         })
         POOL.submit(_run_job, job_id)
