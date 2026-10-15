@@ -854,6 +854,9 @@ def _run_job(job_id: str) -> None:
             # performer in the base video, keeping the source motion,
             # scene and camera. Output has no audio track — the base
             # video's audio is muxed back (timing follows the source).
+            # With face_lock the reference photo's REAL face is then
+            # composited over the generative result (combo mode): the
+            # body comes from the model, the face is pixel-true.
             if ac is None:
                 raise RuntimeError("animate_client not available")
             p = job["params"]
@@ -868,16 +871,31 @@ def _run_job(job_id: str) -> None:
             JOBS.update(job_id, status="running", progress=30,
                         phase="Wan Animate is rendering")
             url = ac.wait(ajob, timeout_s=1800.0, poll_interval_s=10.0)
-            JOBS.update(job_id, status="running", progress=90,
+            JOBS.update(job_id, status="running", progress=85,
                         phase="downloading result")
-            silent = os.path.join(jobdir, f"{base}_animate_silent.mp4")
-            ac.download_to_file(url, silent)
+            gen = os.path.join(jobdir, f"{base}_animate_raw.mp4")
+            ac.download_to_file(url, gen)
+            body_video = gen
+            if p.get("face_lock"):
+                try:
+                    JOBS.update(job_id, status="running", progress=93,
+                                phase="locking face to reference")
+                    locked = os.path.join(jobdir,
+                                          f"{base}_animate_locked.mp4")
+                    _face_lock(gen, ref_path, locked, jobdir)
+                    body_video = locked
+                except Exception:
+                    body_video = gen  # keep the generative result
             result_name = f"{base}_fullreplace.mp4"
-            _mux_audio(silent, mpath, os.path.join(jobdir, result_name))
-            try:
-                os.remove(silent)
-            except OSError:
-                pass
+            _mux_audio(body_video, mpath,
+                       os.path.join(jobdir, result_name))
+            # Temps are safe to drop: the result is a separate file.
+            for tmp in (gen, os.path.join(jobdir,
+                                          f"{base}_animate_locked.mp4")):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
             JOBS.update(job_id, status="done", progress=100,
                         phase="done",
                         result_url=f"/api/result/{job_id}/{result_name}",
@@ -1806,7 +1824,7 @@ class StudioHandler(BaseHTTPRequestHandler):
         ref_media = body.get("ref_media", "")
         mode = body.get("mode", "ai")
         prompt = (body.get("prompt") or "").strip()
-        if mode not in ("face", "ai", "animate"):
+        if mode not in ("face", "ai", "animate", "combo"):
             self._send_json({"error": f"unknown mode {mode!r}"}, 400)
             return
         mpath = safe_media_path(media)
@@ -1840,8 +1858,10 @@ class StudioHandler(BaseHTTPRequestHandler):
             self._send_json({"job_id": job_id, "status": "started",
                              "estimate": "$0 (local)"})
             return
-        if mode == "animate":
+        if mode in ("animate", "combo"):
             # Wan 2.2 Animate full-body replacement (WaveSpeed).
+            # "combo" adds the free local face-lock on top: the body is
+            # generative, the face ends up pixel-true to the photo.
             if ac is None:
                 self._send_json(
                     {"error": "animate client not available on server"},
@@ -1884,6 +1904,7 @@ class StudioHandler(BaseHTTPRequestHandler):
             job_id = JOBS.new(media, "animate_replace", "wan-animate", {
                 "ref_media": ref_media,
                 "resolution": resolution,
+                "face_lock": mode == "combo",
             })
             POOL.submit(_run_job, job_id)
             self._send_json({"job_id": job_id, "status": "started",
