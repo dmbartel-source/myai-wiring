@@ -80,7 +80,10 @@ def main() -> int:
     ap.add_argument("--motion", required=True, help="Path to bundled motion mp4")
     ap.add_argument("--out", required=True)
     ap.add_argument("--motion-size", type=int, default=MOTION_SIZE)
-    ap.add_argument("--backend", default="neural", choices=["neural", "gs"])
+    # LHMPP-700M-PixelShuffle is a GS-output model (upstream app.py's --gs
+    # flag names this exact model): it has NO neural_renderer, and asking
+    # for "neural" dies in animation_infer. Default to "gs".
+    ap.add_argument("--backend", default="gs", choices=["neural", "gs"])
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
