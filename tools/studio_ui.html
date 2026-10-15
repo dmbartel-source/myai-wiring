@@ -357,6 +357,13 @@ footer.hint{text-align:center; color:var(--faint); font-size:12.5px; padding:20p
         <input type="checkbox" id="gr-facelock" checked style="width:20px;height:20px">
         <span>🔒 Face Lock — paste her real face over the render (if it lands in the wrong place, turn this off)</span>
       </label>
+      <label style="display:flex;gap:10px;align-items:center;margin:10px 2px">
+        <span>Engine:</span>
+        <select id="gr-engine" style="flex:1">
+          <option value="scail" selected>SCAIL-2 — newest end-to-end replacement (research pick)</option>
+          <option value="vace">VACE — inpainting (previous engine)</option>
+        </select>
+      </label>
       <button class="bigbtn" id="gr-go">Replace Model on Your GPU</button>
       <button class="bigbtn ghost" id="gr-back">Back</button>
     </div>
@@ -1304,7 +1311,7 @@ $("#gr-go").addEventListener("click", async ()=>{
   box.innerHTML = `<div class="spinner"></div>`;
   try{
     const payload = {id:"gpu_replace", prompt:($("#gr-prompt").value || "").trim(), media:grBase.name,
-      params:{face_lock: $("#gr-facelock").checked},
+      params:{face_lock: $("#gr-facelock").checked, engine: $("#gr-engine").value},
       reference_images: grRefs.filter(m=>m.type==="image").map(m=>m.name),
       reference_videos: grRefs.filter(m=>m.type==="video").map(m=>m.name)};
     const r = await api("/api/generate", {method:"POST", headers:{"Content-Type":"application/json"},
