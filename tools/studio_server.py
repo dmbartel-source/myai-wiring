@@ -738,6 +738,11 @@ def _ref_face_crop(ref_photo_path: str):
     return img[y0:y1, x0:x1]
 
 
+# Shown on the finished job when the true-to-reference face lock could
+# not be applied, so an unlocked result is never passed off as locked.
+FACE_LOCK_FAILED_NOTE = "face lock FAILED — showing unlocked version"
+
+
 def _face_lock(video_path: str, ref_photo_path: str, out_path: str,
                workdir: str) -> str:
     """Composite the reference photo's face onto every frame of a video.
@@ -1181,6 +1186,7 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                                 poll_interval_s=10.0, progress_cb=_progress)
     if not saved:
         raise RuntimeError("GPU pod finished but produced no output files")
+    gpu_lock_failed = False
     if gen_id == "gpu_replace" and gpu_src_video:
         # VACE renders silent video: put the original audio back,
         # then Face-Lock the reference's real face over the render.
@@ -1200,7 +1206,7 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                 if os.path.exists(locked):
                     cur = locked
             except Exception:
-                pass
+                gpu_lock_failed = True
         saved[0] = cur
     JOBS.update(job_id, status="running", progress=95,
                 phase="saving result")
@@ -1209,9 +1215,13 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
     dest = os.path.join(jobdir, result_name)
     if os.path.abspath(saved[0]) != os.path.abspath(dest):
         os.replace(saved[0], dest)
-    JOBS.update(job_id, status="done", progress=100, phase="done",
+    done_extra = {"phase": "done"}
+    if gpu_lock_failed:
+        done_extra = {"phase": f"done — {FACE_LOCK_FAILED_NOTE}",
+                      "warning": FACE_LOCK_FAILED_NOTE}
+    JOBS.update(job_id, status="done", progress=100,
                 result_url=f"/api/result/{job_id}/{result_name}",
-                result_name=result_name)
+                result_name=result_name, **done_extra)
 
 
 def _run_job(job_id: str) -> None:
@@ -1341,6 +1351,7 @@ def _run_job(job_id: str) -> None:
             # the person and drifts; composite the source photo's real
             # face back onto the result. I2V only (source media is the
             # reference photo). Failure keeps the unlocked result.
+            lock_failed = False
             if (job["params"].get("face_lock") and mode == "i2v"
                     and media_type(job["media"]) == "image"):
                 try:
@@ -1351,12 +1362,16 @@ def _run_job(job_id: str) -> None:
                                os.path.join(jobdir, locked_name), jobdir)
                     result_name = locked_name
                 except Exception:
-                    pass
+                    lock_failed = True
             result_name = os.path.basename(
                 os.path.join(jobdir, result_name))
+            done_extra = {"phase": "done"}
+            if lock_failed:
+                done_extra = {"phase": f"done — {FACE_LOCK_FAILED_NOTE}",
+                              "warning": FACE_LOCK_FAILED_NOTE}
             JOBS.update(job_id, status="done", progress=100,
                         result_url=f"/api/result/{job_id}/{result_name}",
-                        result_name=result_name)
+                        result_name=result_name, **done_extra)
             return
         elif kind == "v2v_generate":
             # Single AI restyle via Venice V2V/R2V. Prompt passes through
@@ -1557,6 +1572,7 @@ def _run_job(job_id: str) -> None:
                 gen = os.path.join(jobdir, f"{base}_animate_raw.mp4")
                 _concat_normalized(rendered, gen, mpath)
             body_video = gen
+            lock_failed = False
             if p.get("face_lock"):
                 try:
                     JOBS.update(job_id, status="running", progress=93,
@@ -1567,6 +1583,7 @@ def _run_job(job_id: str) -> None:
                     body_video = locked
                 except Exception:
                     body_video = gen  # keep the generative result
+                    lock_failed = True
             result_name = f"{base}_fullreplace.mp4"
             _mux_audio(body_video, mpath,
                        os.path.join(jobdir, result_name))
@@ -1580,10 +1597,13 @@ def _run_job(job_id: str) -> None:
                         os.remove(tmp)
                     except OSError:
                         pass
+            done_extra = {"phase": "done"}
+            if lock_failed:
+                done_extra = {"phase": f"done — {FACE_LOCK_FAILED_NOTE}",
+                              "warning": FACE_LOCK_FAILED_NOTE}
             JOBS.update(job_id, status="done", progress=100,
-                        phase="done",
                         result_url=f"/api/result/{job_id}/{result_name}",
-                        result_name=result_name)
+                        result_name=result_name, **done_extra)
             return
         elif kind == "longvideo":
             # Chained minutes-long video. See longvideo.py for the
@@ -1665,6 +1685,19 @@ def _run_job(job_id: str) -> None:
                     submit_args["reference_image_urls"] = [_r2v_ref_url]
                 return vc.submit(mid, submit_args)
 
+            # Per-clip face lock: each accepted clip is locked BEFORE
+            # its last frame seeds the next clip, so generator drift
+            # cannot compound down the chain. The stitched video still
+            # gets the final lock pass below.
+            _clip_lock_fn = None
+            if p.get("face_lock") and ref_image:
+                _lock_ref = safe_media_path(ref_image)
+                if _lock_ref:
+                    def _clip_lock(path, _ref=_lock_ref):
+                        _tmp = path + ".locking.mp4"
+                        _face_lock(path, _ref, _tmp, jobdir)
+                        os.replace(_tmp, path)
+                    _clip_lock_fn = _clip_lock
             final = lv.run_chain(
                 beats=beats,
                 clip_duration_s=float(p["clip_duration_s"]),
@@ -1687,12 +1720,14 @@ def _run_job(job_id: str) -> None:
                 crf=int(q["crf"]),
                 preset=q["preset"],
                 progress_cb=_progress,
+                clip_lock_fn=_clip_lock_fn,
             )
             result_name = f"{base}_longvideo.mp4"
             import shutil as _sh2
             _sh2.copy2(final, os.path.join(jobdir, result_name))
             # True-to-reference face lock on the stitched video: put the
             # reference photo's real face back over the AI's drifted one.
+            lock_failed = False
             if p.get("face_lock") and ref_image:
                 _ref_p = safe_media_path(ref_image)
                 if _ref_p:
@@ -1706,11 +1741,14 @@ def _run_job(job_id: str) -> None:
                                    jobdir)
                         result_name = _locked_name
                     except Exception:
-                        pass
+                        lock_failed = True
+            done_extra = {"phase": "done"}
+            if lock_failed:
+                done_extra = {"phase": f"done — {FACE_LOCK_FAILED_NOTE}",
+                              "warning": FACE_LOCK_FAILED_NOTE}
             JOBS.update(job_id, status="done", progress=100,
-                        phase="done",
                         result_url=f"/api/result/{job_id}/{result_name}",
-                        result_name=result_name)
+                        result_name=result_name, **done_extra)
             return
         else:
             raise RuntimeError(f"unknown kind {kind!r}")
