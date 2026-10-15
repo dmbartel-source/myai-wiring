@@ -827,8 +827,10 @@ def _run_job(job_id: str) -> None:
                 "prompt": prompt,
                 "duration": duration_s,
                 "resolution": q["resolution"],
+                # Venice requires aspect_ratio on R2V submits; "adaptive"
+                # keeps the base video's own framing.
+                "aspect_ratio": "adaptive",
                 "reference_video_urls": [vc.file_to_data_url(mpath)],
-                "omni_reference_task_type": "edit",
             }
             if ref_type == "image":
                 args["reference_image_urls"] = [vc.file_to_data_url(ref_path)]
