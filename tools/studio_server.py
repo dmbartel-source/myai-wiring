@@ -868,7 +868,10 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
             vup, iup, prompt,
             reference_strength=_f("reference_strength", 1.0),
             mask_prompt=(p.get("mask_prompt") or "woman"),
-            mask_expand=_i("mask_expand", 10),
+            mask_expand=_i("mask_expand", 16),
+            mask_threshold=_f("mask_threshold", 0.35),
+            contact_reach=_i("contact_reach", 16),
+            contact_pad=_i("contact_pad", 8),
             protect_contact=p.get("protect_contact", True)
                 not in (False, 0, "false"), **knobs)
         suffix, timeout_s = "gpu_replace", 3600.0
@@ -2033,7 +2036,8 @@ class StudioHandler(BaseHTTPRequestHandler):
         knobs = {k: raw[k] for k in
                  ("seed", "steps", "cfg", "width", "height", "frames",
                   "fps", "denoise", "negative_prompt", "reference_strength",
-                  "mask_prompt", "mask_expand", "face_lock", "protect_contact")
+                  "mask_prompt", "mask_expand", "face_lock", "protect_contact",
+                  "mask_threshold", "contact_reach", "contact_pad")
                  if k in raw}
         media = body.get("media") or ""
         params = {"prompt": prompt, **knobs}
