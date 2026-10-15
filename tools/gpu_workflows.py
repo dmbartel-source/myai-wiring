@@ -328,6 +328,10 @@ def video_replace_model(
     mask_threshold: float = 0.5,
     composite: bool = True,
     composite_feather: int = 8,
+    protect_contact: bool = True,
+    partner_prompt: str = "man",
+    contact_reach: int = 24,
+    contact_pad: int = 16,
     shift: float = _WAN_SHIFT,
     filename_prefix: str = "myai/replace",
 ) -> dict:
@@ -353,6 +357,15 @@ def video_replace_model(
        everything outside the performer — room, other people, camera —
        is the original footage pixel for pixel, not a re-render. Only
        her region is synthesized (those pixels exist nowhere else).
+    6. CONTACT PROTECTION (default on): the partner (`partner_prompt`)
+       is tracked too; where the two bodies come within
+       `contact_reach` px, that patch of her mask (grown by
+       `contact_pad`) is subtracted from the replacement mask. The
+       interlocked region — genitals/contact zone — is therefore
+       never erased and never regenerated: in the output it is the
+       source video itself. (Inside that patch, the visible anatomy
+       remains the source performer's — that is what preserving it
+       means. Identity replacement applies everywhere else.)
 
     source_video / reference_image: ComfyUI input filenames (from
     gpu_client.upload_video / upload_image). frames caps how much of
@@ -436,9 +449,41 @@ def video_replace_model(
                           "format": "video/h264-mp4", "pingpong": False,
                           "save_output": True}},
     }
+    eff_mask = ["14", 0]
+    if protect_contact:
+        wf["25"] = {"class_type": "CLIPTextEncode",
+                    "inputs": {"clip": ["10", 1], "text": partner_prompt}}
+        wf["26"] = {"class_type": "SAM3_VideoTrack",
+                    "inputs": {"images": ["9", 0], "model": ["10", 0],
+                               "conditioning": ["25", 0],
+                               "detection_threshold": mask_threshold,
+                               "max_objects": 4, "detect_interval": 1}}
+        wf["27"] = {"class_type": "SAM3_TrackToMask",
+                    "inputs": {"track_data": ["26", 0],
+                               "object_indices": ""}}
+        wf["28"] = {"class_type": "GrowMask",
+                    "inputs": {"mask": ["27", 0],
+                               "expand": int(contact_reach),
+                               "tapered_corners": True}}
+        wf["29"] = {"class_type": "MaskComposite",
+                    "inputs": {"destination": ["14", 0],
+                               "source": ["28", 0], "x": 0, "y": 0,
+                               "operation": "and"}}
+        wf["30"] = {"class_type": "GrowMask",
+                    "inputs": {"mask": ["29", 0],
+                               "expand": int(contact_pad),
+                               "tapered_corners": True}}
+        wf["31"] = {"class_type": "MaskComposite",
+                    "inputs": {"destination": ["14", 0],
+                               "source": ["30", 0], "x": 0, "y": 0,
+                               "operation": "subtract"}}
+        eff_mask = ["31", 0]
+        wf["15"]["inputs"]["mask"] = eff_mask
+        wf["17"]["inputs"]["mask"] = eff_mask
+        wf["18"]["inputs"]["control_masks"] = eff_mask
     if composite:
         wf["23"] = {"class_type": "FeatherMask",
-                    "inputs": {"mask": ["14", 0],
+                    "inputs": {"mask": eff_mask,
                                "left": int(composite_feather),
                                "top": int(composite_feather),
                                "right": int(composite_feather),
