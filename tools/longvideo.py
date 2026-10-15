@@ -74,8 +74,31 @@ CONTINUITY_TAIL = (
     " objects, lighting direction and color temperature; the SAME camera angle"
     " and framing as the reference image. Do NOT redesign, beautify, or"
     " reinterpret anything. Do NOT change the person's appearance in any way."
-    " Then perform ONLY the new action described above — move the story"
-    " forward with that action, nothing else."
+)
+
+# Identity anchor for the first clip (its input IS the reference image).
+IDENTITY_ANCHOR = (
+    " The person on screen is EXACTLY the person in the starting image —"
+    " identical face, hair, body type and outfit. Do not change their"
+    " appearance in any way."
+)
+
+# Anti-loop negative prompt sent with every chained clip. Generative
+# models fall into looping motion when unsteered; naming the failure
+# modes in the negative prompt measurably suppresses them.
+CHAIN_NEGATIVE_PROMPT = (
+    "looping motion, repeating the same movement, cyclic motion, "
+    "static pose, frozen frame, no movement, rocking back and forth, "
+    "morphing face, changing identity, different person, face change, "
+    "wardrobe change, extra limbs, distorted hands"
+)
+
+# Escalation appended when QC rejects a clip for looping / not advancing.
+_QC_ESCALATION = (
+    " CRITICAL CORRECTION: the previous attempt was rejected because the"
+    " motion looped or repeated the earlier action instead of advancing."
+    " This time the action MUST visibly progress from its start to a"
+    " clearly different end position. No repeated or cyclic movement."
 )
 
 
@@ -123,19 +146,39 @@ def segment_prompt(prompt: str, n_beats: int) -> list[str]:
             beats.append(" ".join(pieces[i:i + take]))
             i += take
 
-    # Fill any empty beats by extending the previous beat's tail.
+    # Fill any empty beats by developing the previous beat further.
+    # (The old filler repeated the beat + "(continues)", which taught
+    # the model to loop the same motion — the exact failure David hit.)
     for b in range(n_beats):
         if not beats[b].strip():
-            beats[b] = (beats[b - 1] if b else prompt) + " (continues)"
+            prev = beats[b - 1] if b else prompt
+            beats[b] = (prev + " — the action develops further with new,"
+                        " non-repeating motion")
     return [b.strip() for b in beats]
 
 
 def beat_prompt(beat: str, idx: int) -> str:
-    """Beat text + continuity context for chained clips (not the first)."""
+    """Build a clip prompt that the model can actually follow.
+
+    Structure matters for prompt adherence:
+      1. the action, stated first and as a complete performance with a
+         defined end state ("ends with ...") — models follow concrete
+         end states far better than open-ended motion descriptions;
+      2. an explicit no-loop instruction;
+      3. identity/continuity lock (anchor on clip 1, full continuity
+         lock on later clips).
+    """
     beat = beat.strip()
+    action = (
+        f"Perform this action: {beat}. Carry it through from its natural"
+        " beginning to a completed end state — the clip finishes with the"
+        " action done and the subject settled in the resulting position."
+        " One continuous performance: never loop, repeat, or cycle any"
+        " movement within the clip."
+    )
     if idx == 0:
-        return beat
-    return beat + CONTINUITY_TAIL
+        return action + IDENTITY_ANCHOR
+    return action + CONTINUITY_TAIL
 
 
 # ------------------------------------------------------------ planning ----
@@ -182,6 +225,69 @@ def _probe(path: str) -> dict:
         fps = 30.0
     return {"w": int(s.get("width") or 1280),
             "h": int(s.get("height") or 720), "fps": fps}
+
+
+# ------------------------------------------------------- anti-loop QC ----
+#
+# Generative clips fail in two measurable ways: (1) static / internally
+# looping — first and last frames nearly identical; (2) not advancing —
+# the clip ends where the previous clip ended. Both are detectable by
+# comparing tiny grayscale frame signatures, no imaging library needed
+# (ffmpeg emits raw gray bytes; the comparison is pure Python).
+
+_SIG_SIZE = 32  # signature frames are _SIG_SIZE x _SIG_SIZE gray bytes
+
+
+def _gray_signature(video_path: str, which: str) -> Optional[bytes]:
+    """32x32 grayscale signature of the first or last frame, or None."""
+    if not _have("ffmpeg"):
+        return None
+    seek = ["-ss", "0"] if which == "first" else ["-sseof", "-0.25"]
+    cmd = (["ffmpeg", "-v", "error"] + seek + ["-i", video_path,
+           "-frames:v", "1", "-vf", f"scale={_SIG_SIZE}:{_SIG_SIZE}",
+           "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+    try:
+        out = subprocess.run(cmd, capture_output=True, timeout=60)
+    except Exception:
+        return None
+    data = out.stdout or b""
+    if len(data) < _SIG_SIZE * _SIG_SIZE:
+        return None
+    return data[:_SIG_SIZE * _SIG_SIZE]
+
+
+def _signature_diff(a: Optional[bytes], b: Optional[bytes]) -> Optional[float]:
+    """Mean absolute per-pixel difference (0..255), or None if unknown."""
+    if not a or not b or len(a) != len(b):
+        return None
+    total = 0
+    for x, y in zip(a, b):
+        total += x - y if x >= y else y - x
+    return total / len(a)
+
+
+# Below these mean-abs-diff values a clip is treated as looping/static
+# (motion) or as not having advanced from the previous clip (advance).
+# Deliberately conservative: a false rejection costs a paid re-render.
+QC_MIN_MOTION = 1.5
+QC_MIN_ADVANCE = 2.5
+
+
+def _clip_qc(video_path: str, prev_last_sig: Optional[bytes]) -> tuple:
+    """Check a downloaded clip. Returns (ok, reason, last_sig).
+
+    Fail-open: when signatures can't be computed (no ffmpeg, odd file),
+    the clip is accepted — QC must never break a chain it can't judge.
+    """
+    first_sig = _gray_signature(video_path, "first")
+    last_sig = _gray_signature(video_path, "last")
+    motion = _signature_diff(first_sig, last_sig)
+    if motion is not None and motion < QC_MIN_MOTION:
+        return False, "static/looping clip (no visible motion)", last_sig
+    advance = _signature_diff(prev_last_sig, last_sig)
+    if advance is not None and advance < QC_MIN_ADVANCE:
+        return False, "clip ends where the previous clip ended", last_sig
+    return True, "", last_sig
 
 
 def stitch_clips(clip_paths: list[str], out_path: str,
@@ -317,17 +423,21 @@ def run_chain(
             progress_cb(i, n, phase)
 
     clips: list[str] = []
+    prev_last_sig: Optional[bytes] = None
     for i, beat in enumerate(beats):
         dest = os.path.join(workdir, f"clip_{i:02d}.mp4")
         # Checkpoint/resume: skip clips already completed in a prior run.
         if os.path.isfile(dest) and os.path.getsize(dest) > 0:
             clips.append(dest)
+            # Keep the advance-check baseline current for the next clip.
+            prev_last_sig = _gray_signature(dest, "last")
             progress(i, f"clip {i + 1}/{n} resumed from checkpoint")
             continue
         progress(i, f"clip {i + 1}/{n}")
         prompt = beat_prompt(beat, i)
         args: dict = {"prompt": prompt, "duration": clip_duration_s,
-                      "resolution": resolution}
+                      "resolution": resolution,
+                      "negative_prompt": CHAIN_NEGATIVE_PROMPT}
         if i == 0:
             if ref_image_path:
                 args["model_id"] = i2v_model_id
@@ -354,14 +464,33 @@ def run_chain(
             args["image_url"] = file_to_url_fn(frame_jpg)
 
         # Per-clip retry: transient failures retry the clip, not the chain.
+        # A downloaded clip also goes through anti-loop QC; a clip that
+        # loops or fails to advance the action is retried with an
+        # escalated prompt. On the final attempt the clip is accepted
+        # regardless — a flawed clip beats a dead chain.
         last_err: Optional[Exception] = None
         for attempt in range(3):
             try:
                 job = submit_clip(dict(args))  # copy: submit pops keys
                 url = wait_clip(job)
                 download_clip(url, dest)
+                ok, reason, last_sig = _clip_qc(dest, prev_last_sig)
+                if ok or attempt == 2:
+                    if not ok:
+                        progress(i, f"clip {i + 1}/{n}: QC warning "
+                                    f"({reason}) — accepted on final try")
+                    prev_last_sig = last_sig
+                    last_err = None
+                    break
+                # QC rejected: escalate the prompt and regenerate.
+                progress(i, f"clip {i + 1}/{n}: redoing — {reason}")
+                args["prompt"] = beat_prompt(beat, i) + _QC_ESCALATION
+                try:
+                    os.remove(dest)
+                except OSError:
+                    pass
                 last_err = None
-                break
+                continue
             except (InterruptedError, KeyboardInterrupt):
                 raise
             except Exception as e:
