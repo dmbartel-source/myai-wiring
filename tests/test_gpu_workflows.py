@@ -155,16 +155,49 @@ def test_video_replace_model_injects_parameters():
     assert load["video"] == "base.mp4"
     assert load["frame_load_cap"] == 45
     assert nodes_of(wf, "LoadImage")["8"]["inputs"]["image"] == "newmodel.png"
-    vace = nodes_of(wf, "WanVaceToVideo")["9"]["inputs"]
+    vace = nodes_of(wf, "WanVaceToVideo")["18"]["inputs"]
     assert vace["strength"] == 0.85
-    assert vace["control_video"] == ["7", 0]
     assert vace["reference_image"] == ["8", 0]
     assert vace["length"] == 45
-    ks = nodes_of(wf, "KSampler")["10"]["inputs"]
+    ks = nodes_of(wf, "KSampler")["19"]["inputs"]
     assert ks["seed"] == 9 and ks["steps"] == 26 and ks["cfg"] == 4.5
-    assert ks["positive"] == ["9", 0] and ks["latent_image"] == ["9", 2]
+    assert ks["positive"] == ["18", 0] and ks["latent_image"] == ["18", 2]
     texts = nodes_of(wf, "CLIPTextEncode")
     assert texts["5"]["inputs"]["text"] == "same dance, new performer"
+
+
+def test_video_replace_model_erases_performer_before_vace():
+    """The Oct 14 2026 lesson: feeding VACE the untouched source makes
+    it reconstruct the original performer. The workflow must track the
+    performer with SAM3 and paint her black in the control video."""
+    wf = gw.video_replace_model("base.mp4", "newmodel.png",
+                                mask_prompt="the dancer", mask_expand=12)
+    assert_links_valid(wf)
+    ckpt = nodes_of(wf, "CheckpointLoaderSimple")["10"]["inputs"]
+    assert ckpt["ckpt_name"] == gw.MODELS["sam3_ckpt"]
+    detect_text = nodes_of(wf, "CLIPTextEncode")["11"]["inputs"]
+    assert detect_text["text"] == "the dancer"
+    assert detect_text["clip"] == ["10", 1]
+    track = nodes_of(wf, "SAM3_VideoTrack")["12"]["inputs"]
+    assert track["model"] == ["10", 0]
+    assert track["images"] == ["9", 0]
+    assert track["conditioning"] == ["11", 0]
+    grow = nodes_of(wf, "GrowMask")["14"]["inputs"]
+    assert grow["mask"] == ["13", 0] and grow["expand"] == 12
+    comp = nodes_of(wf, "ImageCompositeMasked")["17"]["inputs"]
+    assert comp["destination"] == ["9", 0]
+    assert comp["source"] == ["16", 0]      # inverted mask as image
+    assert comp["mask"] == ["14", 0]
+    inv = nodes_of(wf, "InvertMask")["15"]["inputs"]
+    assert inv["mask"] == ["14", 0]
+    vace = nodes_of(wf, "WanVaceToVideo")["18"]["inputs"]
+    assert vace["control_video"] == ["17", 0]   # the ERASED video
+    assert vace["control_masks"] == ["14", 0]
+    trim = nodes_of(wf, "TrimVideoLatent")["20"]["inputs"]
+    assert trim["samples"] == ["19", 0]
+    assert trim["trim_amount"] == ["18", 3]
+    dec = nodes_of(wf, "VAEDecode")["21"]["inputs"]
+    assert dec["samples"] == ["20", 0]
 
 
 # -------------------------------------------------------------- escape hatch --
