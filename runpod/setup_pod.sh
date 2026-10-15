@@ -27,6 +27,21 @@ COMFY="$VOLUME/ComfyUI"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODELS_TXT="${MODELS_TXT:-$SCRIPT_DIR/models.txt}"
 
+
+# Network volumes choke on git's lock-and-rename writes ("could not
+# write config file ... No such file or directory" — seen live on
+# RunPod US-CA-2, Oct 14 2026). Clone onto the local disk first,
+# then copy the tree onto the volume.
+git_clone_to() {
+  local url="$1" dest="$2" stage
+  stage="$(mktemp -d)"
+  git clone --depth 1 "$url" "$stage/repo"
+  rm -rf "$dest"
+  mkdir -p "$(dirname "$dest")"
+  cp -a "$stage/repo" "$dest"
+  rm -rf "$stage"
+}
+
 if [ ! -d "$VOLUME" ]; then
   echo "ERROR: volume mount $VOLUME does not exist." >&2
   echo "Create the pod with a network volume mounted at /workspace." >&2
@@ -52,7 +67,7 @@ fi
 
 echo "== ComfyUI =="
 if [ ! -d "$COMFY/.git" ]; then
-  git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git "$COMFY"
+  git_clone_to https://github.com/comfyanonymous/ComfyUI.git "$COMFY"
 else
   git -C "$COMFY" pull --ff-only || true
 fi
@@ -62,7 +77,7 @@ echo "== custom nodes =="
 clone_node() {
   local url="$1" dir="$2"
   if [ ! -d "$COMFY/custom_nodes/$dir/.git" ]; then
-    git clone --depth 1 "$url" "$COMFY/custom_nodes/$dir"
+    git_clone_to "$url" "$COMFY/custom_nodes/$dir"
   else
     git -C "$COMFY/custom_nodes/$dir" pull --ff-only || true
   fi
