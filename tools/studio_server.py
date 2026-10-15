@@ -893,8 +893,30 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
         gpu_face_ref = ref_paths[0]
         gpu_src_video = vpath
         vup = gc.upload_video(vpath)
-        iup = gc.upload_image(rpath)
-        wf = gw.video_replace_model(
+        engine = (p.get("engine") or "vace").strip().lower()
+        if engine == "scail":
+            # SCAIL-2 end-to-end replacement: ONE reference image (the
+            # first), not the tiled sheet -- its coloured-mask identity
+            # binding wants a single clean subject. Works larger than
+            # the source: 32-aligned, ~704 wide, aspect preserved.
+            iup = gc.upload_image(ref_paths[0])
+            sk = dict(knobs)
+            if info.get("width"):
+                sw, sh = int(info["width"]), int(info["height"])
+                tw = 704 if sw <= 1408 else (sw // 32) * 32
+                sk["width"] = tw
+                sk["height"] = max(32, (round(sh * tw / sw) // 32) * 32)
+            if "steps" not in p:
+                sk["steps"] = 6
+            if "cfg" not in p:
+                sk["cfg"] = 1.0
+            wf = gw.video_replace_model_scail(
+                vup, iup, prompt,
+                mask_prompt=(p.get("mask_prompt") or "woman"),
+                mask_threshold=_f("mask_threshold", 0.4), **sk)
+        else:
+            iup = gc.upload_image(rpath)
+            wf = gw.video_replace_model(
             vup, iup, prompt,
             reference_strength=_f("reference_strength", 1.0),
             mask_prompt=(p.get("mask_prompt") or "woman"),
@@ -2069,7 +2091,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                   "fps", "denoise", "negative_prompt", "reference_strength",
                   "mask_prompt", "mask_expand", "face_lock", "protect_contact",
                   "mask_threshold", "contact_reach", "contact_pad",
-                  "partner_threshold")
+                  "partner_threshold", "engine")
                  if k in raw}
         media = body.get("media") or ""
         params = {"prompt": prompt, **knobs}
