@@ -85,8 +85,11 @@ def _upload(base, filename, data, ctype):
     req = urllib.request.Request(
         base + "/api/upload", data=body,
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-    with urllib.request.urlopen(req) as r:
-        return r.status, json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
 
 
 def _make_png():
@@ -149,8 +152,21 @@ def test_upload_video(server):
 def test_upload_rejects_non_media(server):
     base, _, _ = server
     status, resp = _upload(base, "evil.exe", b"MZ...", "application/x-ms")
+    # An upload where EVERYTHING is refused now says so (400 + reason),
+    # instead of the old silent-skip 200 that made files "vanish".
+    assert status == 400
+    assert "evil.exe" in resp["error"]
+    assert resp["rejected"]
+
+
+def test_upload_accepts_download_formats(server):
+    # Videos pulled from a phone's Downloads folder are often .avi/.ts —
+    # they must be accepted as videos, not silently skipped.
+    base, up, _ = server
+    status, resp = _upload(base, "movie.avi", b"RIFF....", "video/x-msvideo")
     assert status == 200
-    assert resp["saved"] == []
+    assert resp["saved"] and resp["saved"][0]["type"] == "video"
+    assert resp["saved"][0]["name"] == "movie.avi"
 
 
 def test_media_listing(server):
@@ -210,7 +226,9 @@ def test_generate_options(server):
     assert data["configured"] is False
     ids = [o["id"] for o in data["options"]]
     assert ids == ["i2v", "i2v_venice", "i2v_venice_uncensored", "kenburns_free", "t2v_draft", "t2v_hero",
-                   "v2v_restyle", "model_replace", "long_video"]
+                   "v2v_restyle", "model_replace",
+                   "gpu_image_edit", "gpu_i2v", "gpu_t2v", "gpu_replace",
+                   "long_video"]
     free = next(o for o in data["options"] if o["id"] == "kenburns_free")
     paid = next(o for o in data["options"] if o["id"] == "t2v_hero")
     assert free["badge"] == "FREE" and not free["paid"]
