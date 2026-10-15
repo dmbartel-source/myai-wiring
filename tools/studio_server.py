@@ -528,6 +528,91 @@ def _venice_ready_video(path: str, workdir: str, tag: str) -> str:
     return out
 
 
+# Wan Animate accepts at most 120s per job; long base videos are
+# processed in chunks under that cap and stitched back together.
+ANIMATE_CHUNK_S = 110.0
+
+
+def _chunk_bounds(duration: float, chunk_s: float) -> list:
+    """[(start, length), ...] covering `duration` in <= chunk_s parts."""
+    bounds = []
+    start = 0.0
+    while start < duration - 0.05:
+        length = min(chunk_s, duration - start)
+        bounds.append((start, length))
+        start += length
+    return bounds or [(0.0, duration)]
+
+
+def _split_video_chunks(path: str, workdir: str, chunk_s: float) -> list:
+    """Split a video into re-encoded MP4 chunks (no audio needed:
+    the original audio is muxed back onto the final stitch)."""
+    import subprocess as _sp
+    info = _probe_video_info(path)
+    duration = info.get("duration") or 0.0
+    if duration <= chunk_s + 0.05:
+        return [path]
+    chunks = []
+    for i, (start, length) in enumerate(_chunk_bounds(duration, chunk_s)):
+        out = os.path.join(workdir, f"chunk_{i:03d}.mp4")
+        r = _sp.run(["ffmpeg", "-y", "-v", "error",
+                     "-ss", f"{start:.3f}", "-i", path,
+                     "-t", f"{length:.3f}", "-an",
+                     "-c:v", "libx264", "-pix_fmt", "yuv420p", out],
+                    capture_output=True, text=True, timeout=1800)
+        if r.returncode != 0 or not os.path.exists(out):
+            raise RuntimeError("splitting the video failed: "
+                               + (r.stderr or "")[:200])
+        chunks.append(out)
+    return chunks
+
+
+def _concat_normalized(parts: list, out_path: str, like_path: str) -> None:
+    """Concatenate videos, normalizing each to like_path's size/fps
+    first so provider outputs with slightly different specs still join
+    cleanly. Falls back to a plain concat when probing fails."""
+    import subprocess as _sp
+    info = _probe_video_info(like_path)
+    w = h = 0
+    try:
+        pr = _sp.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                      "-show_entries", "stream=width,height,avg_frame_rate",
+                      "-of", "json", like_path],
+                     capture_output=True, text=True, timeout=30)
+        st = (json.loads(pr.stdout or "{}").get("streams") or [{}])[0]
+        w, h = int(st.get("width") or 0), int(st.get("height") or 0)
+    except Exception:
+        pass
+    workdir = os.path.dirname(out_path)
+    norm = []
+    for i, part in enumerate(parts):
+        n = os.path.join(workdir, f"norm_{i:03d}.mp4")
+        vf = []
+        if w and h:
+            vf.append(f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                      f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2")
+        vf.append("fps=30")
+        vf.append("format=yuv420p")
+        r = _sp.run(["ffmpeg", "-y", "-v", "error", "-i", part,
+                     "-vf", ",".join(vf), "-an",
+                     "-c:v", "libx264", n],
+                    capture_output=True, text=True, timeout=1800)
+        if r.returncode != 0 or not os.path.exists(n):
+            raise RuntimeError("normalizing a chunk failed: "
+                               + (r.stderr or "")[:200])
+        norm.append(n)
+    listfile = os.path.join(workdir, "concat_list.txt")
+    with open(listfile, "w") as f:
+        for n in norm:
+            f.write(f"file '{n}'\n")
+    r = _sp.run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
+                 "-i", listfile, "-c", "copy", out_path],
+                capture_output=True, text=True, timeout=1800)
+    if r.returncode != 0 or not os.path.exists(out_path):
+        raise RuntimeError("stitching chunks failed: "
+                           + (r.stderr or "")[:200])
+
+
 def _mux_audio(silent_video: str, audio_source: str, out_path: str) -> str:
     """Copy silent_video's picture + audio_source's audio into out_path.
 
@@ -939,17 +1024,34 @@ def _run_job(job_id: str) -> None:
             if ref_path is None:
                 raise RuntimeError("reference photo disappeared")
             resolution = p.get("resolution", "720p")
-            JOBS.update(job_id, status="running", progress=10,
-                        phase="submitting to WaveSpeed")
-            ajob = ac.submit_replace(ref_path, mpath,
-                                     resolution=resolution)
-            JOBS.update(job_id, status="running", progress=30,
-                        phase="Wan Animate is rendering")
-            url = ac.wait(ajob, timeout_s=1800.0, poll_interval_s=10.0)
-            JOBS.update(job_id, status="running", progress=85,
-                        phase="downloading result")
-            gen = os.path.join(jobdir, f"{base}_animate_raw.mp4")
-            ac.download_to_file(url, gen)
+            # Videos longer than Wan Animate's 120s per-job cap are
+            # split into chunks, each replaced separately, then
+            # stitched back into one full-length result.
+            chunks = _split_video_chunks(mpath, jobdir, ANIMATE_CHUNK_S)
+            rendered = []
+            for ci, chunk in enumerate(chunks):
+                frac = ci / max(1, len(chunks))
+                JOBS.update(
+                    job_id, status="running",
+                    progress=int(5 + frac * 75),
+                    phase=(f"replacing part {ci + 1} of {len(chunks)}"
+                           if len(chunks) > 1 else
+                           "Wan Animate is rendering"))
+                ajob = ac.submit_replace(ref_path, chunk,
+                                         resolution=resolution)
+                url = ac.wait(ajob, timeout_s=1800.0,
+                              poll_interval_s=10.0)
+                out_chunk = os.path.join(jobdir,
+                                         f"anim_out_{ci:03d}.mp4")
+                ac.download_to_file(url, out_chunk)
+                rendered.append(out_chunk)
+            if len(rendered) == 1:
+                gen = rendered[0]
+            else:
+                JOBS.update(job_id, status="running", progress=85,
+                            phase="stitching parts together")
+                gen = os.path.join(jobdir, f"{base}_animate_raw.mp4")
+                _concat_normalized(rendered, gen, mpath)
             body_video = gen
             if p.get("face_lock"):
                 try:
@@ -965,12 +1067,15 @@ def _run_job(job_id: str) -> None:
             _mux_audio(body_video, mpath,
                        os.path.join(jobdir, result_name))
             # Temps are safe to drop: the result is a separate file.
-            for tmp in (gen, os.path.join(jobdir,
-                                          f"{base}_animate_locked.mp4")):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
+            import glob as _glob
+            for pat in ("chunk_*.mp4", "anim_out_*.mp4", "norm_*.mp4",
+                        "concat_list.txt", f"{base}_animate_raw.mp4",
+                        f"{base}_animate_locked.mp4"):
+                for tmp in _glob.glob(os.path.join(jobdir, pat)):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
             JOBS.update(job_id, status="done", progress=100,
                         phase="done",
                         result_url=f"/api/result/{job_id}/{result_name}",
@@ -1969,12 +2074,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                 duration_s = float(pr.stdout.strip() or 5.0)
             except Exception:
                 pass
-            if duration_s > ac.MAX_DURATION_S:
-                self._send_json(
-                    {"error": f"base video is {duration_s:.0f}s; Wan "
-                              f"Animate caps at {ac.MAX_DURATION_S:.0f}s "
-                              "— trim it first (Edit tab)"}, 400)
-                return
+            # Any length is fine: longer videos are split into
+            # <=110s chunks server-side and stitched back together.
             est = ac.estimate_cost(duration_s, resolution)
             job_id = JOBS.new(media, "animate_replace", "wan-animate", {
                 "ref_media": ref_media,
@@ -2011,7 +2112,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                 {"error": f"AI Replace accepts clips of 2-15 seconds "
                           f"(yours is {base_dur:.0f}s). Trim it in the "
                           "Edit tab first \u2014 or use Best Match / "
-                          "Full-Body, which handle up to 120s."}, 400)
+                          "Full-Body, which process videos of any "
+                          "length automatically."}, 400)
             return
         if ref_type == "video":
             ref_info = _probe_video_info(ref_path)
