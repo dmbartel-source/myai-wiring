@@ -187,12 +187,12 @@ def test_video_replace_model_erases_performer_before_vace():
     comp = nodes_of(wf, "ImageCompositeMasked")["17"]["inputs"]
     assert comp["destination"] == ["9", 0]
     assert comp["source"] == ["16", 0]      # inverted mask as image
-    assert comp["mask"] == ["31", 0]        # contact-protected mask
+    assert comp["mask"] == ["34", 0]        # contact-protected mask (via gut guard)
     inv = nodes_of(wf, "InvertMask")["15"]["inputs"]
-    assert inv["mask"] == ["31", 0]
+    assert inv["mask"] == ["34", 0]
     vace = nodes_of(wf, "WanVaceToVideo")["18"]["inputs"]
     assert vace["control_video"] == ["17", 0]   # the ERASED video
-    assert vace["control_masks"] == ["31", 0]
+    assert vace["control_masks"] == ["34", 0]
     trim = nodes_of(wf, "TrimVideoLatent")["20"]["inputs"]
     assert trim["samples"] == ["19", 0]
     assert trim["trim_amount"] == ["18", 3]
@@ -201,7 +201,7 @@ def test_video_replace_model_erases_performer_before_vace():
     # Composite: only the performer's region is pasted over the
     # ORIGINAL frames; everything else stays the source pixels.
     feather = nodes_of(wf, "FeatherMask")["23"]["inputs"]
-    assert feather["mask"] == ["31", 0]
+    assert feather["mask"] == ["34", 0]
     paste = nodes_of(wf, "ImageCompositeMasked")["24"]["inputs"]
     assert paste["destination"] == ["9", 0]
     assert paste["source"] == ["21", 0]
@@ -253,3 +253,12 @@ def test_queue_workflow_escape_hatch_delegates(monkeypatch):
                  "inputs": {"width": 64, "height": 64, "batch_size": 1}}}
     assert gw.queue_workflow(wf) is sentinel
     assert seen["workflow"] is wf
+
+
+def test_contact_guard_and_partner_threshold():
+    wf = gw.video_replace_model("v.mp4", "r.jpg")
+    assert wf["26"]["inputs"]["detection_threshold"] == 0.55
+    assert wf["12"]["inputs"]["detection_threshold"] == 0.5
+    assert wf["34"]["inputs"]["operation"] == "add"
+    assert wf["18"]["inputs"]["control_masks"] == ["34", 0]
+    assert wf["15"]["inputs"]["mask"] == ["34", 0]
