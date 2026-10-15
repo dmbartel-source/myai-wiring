@@ -20,6 +20,7 @@ import torch
 torch._dynamo.config.disable = True
 
 import imageio.v3 as iio
+from accelerate import Accelerator
 from PIL import Image
 
 from core.datasets.data_utils import SrcImagePipeline
@@ -108,6 +109,9 @@ def main() -> int:
         }
     }
 
+    # The app creates an Accelerator before parsing configs; the model
+    # code's logging requires the accelerate state to exist.
+    accelerator = Accelerator()
     cfg, _ = parse_app_configs(model_cards)
     processing_list = [
         dict(
