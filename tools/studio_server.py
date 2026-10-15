@@ -478,7 +478,7 @@ def _probe_video_info(path: str) -> dict:
     try:
         pr = _sp.run(
             ["ffprobe", "-v", "error", "-show_entries",
-             "format=duration,format_name,size:stream=codec_type,codec_name",
+             "format=duration,format_name,size:stream=codec_type,codec_name,width,height",
              "-of", "json", path],
             capture_output=True, text=True, timeout=30)
         data = json.loads(pr.stdout or "{}")
@@ -486,9 +486,15 @@ def _probe_video_info(path: str) -> dict:
         return {}
     fmt = data.get("format", {})
     vcodec = ""
+    vwidth = vheight = 0
     for st in data.get("streams", []):
         if st.get("codec_type") == "video":
             vcodec = st.get("codec_name", "")
+            try:
+                vwidth = int(st.get("width") or 0)
+                vheight = int(st.get("height") or 0)
+            except (TypeError, ValueError):
+                vwidth = vheight = 0
             break
     try:
         duration = float(fmt.get("duration") or 0)
@@ -499,7 +505,8 @@ def _probe_video_info(path: str) -> dict:
     except (TypeError, ValueError):
         size = 0
     return {"duration": duration, "format": fmt.get("format_name", ""),
-            "vcodec": vcodec, "size": size}
+            "vcodec": vcodec, "size": size,
+            "width": vwidth, "height": vheight}
 
 
 def _venice_ready_video(path: str, workdir: str, tag: str) -> str:
@@ -786,6 +793,8 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
 
     JOBS.update(job_id, status="running", progress=10,
                 phase="uploading to your GPU pod")
+    gpu_face_ref = None   # gpu_replace: face-lock source image
+    gpu_src_video = None  # gpu_replace: original video (audio source)
     if gen_id == "gpu_image_edit":
         mpath = safe_media_path(media_name)
         if mpath is None:
@@ -831,19 +840,35 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
         else:
             rpath = ref_paths[0]
         knobs = dict(video_knobs)
+        info = _probe_video_info(vpath)
         if "frames" not in p:
             # Cover the WHOLE clip, not the 81-frame (~5s) workflow
             # default: derive the frame count from the real duration
             # (4n+1 grid), capped per single VACE pass.
-            dur = float(_probe_video_info(vpath).get("duration") or 0.0)
+            dur = float(info.get("duration") or 0.0)
             if dur > 0:
                 raw = int(dur * float(knobs.get("fps", 16.0)))
                 knobs["frames"] = max(17, min(321, 4 * round((raw - 1) / 4) + 1))
+        if not p.get("width") and info.get("width"):
+            # Render at the source's own resolution (16-aligned):
+            # faster than upscaling and keeps its aspect ratio true.
+            knobs["width"] = max(16, (int(info["width"]) // 16) * 16)
+            knobs["height"] = max(16, (int(info["height"]) // 16) * 16)
+        prompt = (p.get("prompt") or "").strip() or (
+            "a photorealistic woman, identical to the woman in the "
+            "reference image, with the same face, hair, body and skin "
+            "tone, performing exactly the same actions and poses as "
+            "the woman in the source video, natural skin texture, "
+            "consistent lighting")
+        gpu_face_ref = ref_paths[0]
+        gpu_src_video = vpath
         vup = gc.upload_video(vpath)
         iup = gc.upload_image(rpath)
         wf = gw.video_replace_model(
-            vup, iup, p.get("prompt", ""),
-            reference_strength=_f("reference_strength", 1.0), **knobs)
+            vup, iup, prompt,
+            reference_strength=_f("reference_strength", 1.0),
+            mask_prompt=(p.get("mask_prompt") or "woman"),
+            mask_expand=_i("mask_expand", 20), **knobs)
         suffix, timeout_s = "gpu_replace", 3600.0
     else:
         raise RuntimeError(f"unknown gpu generate option {gen_id!r}")
@@ -854,6 +879,27 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                             poll_interval_s=10.0, progress_cb=_progress)
     if not saved:
         raise RuntimeError("GPU pod finished but produced no output files")
+    if gen_id == "gpu_replace" and gpu_src_video:
+        # VACE renders silent video: put the original audio back,
+        # then Face-Lock the reference's real face over the render.
+        # Each step falls back to the previous file on any failure.
+        cur = saved[0]
+        try:
+            aud = os.path.join(jobdir, "_with_audio.mp4")
+            _mux_audio(cur, gpu_src_video, aud)
+            if os.path.exists(aud):
+                cur = aud
+        except Exception:
+            pass
+        if gpu_face_ref:
+            try:
+                locked = os.path.join(jobdir, "_facelocked.mp4")
+                _face_lock(cur, gpu_face_ref, locked, jobdir)
+                if os.path.exists(locked):
+                    cur = locked
+            except Exception:
+                pass
+        saved[0] = cur
     JOBS.update(job_id, status="running", progress=95,
                 phase="saving result")
     ext = os.path.splitext(saved[0])[1] or ".bin"
