@@ -11,8 +11,15 @@ Usage:
     python3 prep_lora_dataset.py --video 4707.mp4 --out ~/lora_dataset
     python3 prep_lora_dataset.py --video 4707.mp4 --photos ~/refs --out ~/lora_dataset
 
-Output: out/img_000.jpg + img_000.txt pairs, ready to upload to the
-pod for the SCAIL-2 musubi-tuner fork.
+Output: out/img_000.jpg + img_000.txt pairs.
+
+NOTE (Oct 15, after reading the SCAIL-2-Tuner README): this is
+STAGE-1 raw material only. That fork's training samples additionally
+need, per sample, a reference frame, an EDITED driving image (same
+pose, different person/background), and SAM colored masks for both --
+built with its helper workflows -- and training wants the fp16 DiT
+checkpoint (~33 GB). The frames produced here feed the target and
+reference roles of that construction.
 """
 import argparse
 import os
