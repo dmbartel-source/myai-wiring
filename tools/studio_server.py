@@ -62,9 +62,21 @@ except ImportError:
     fv = None
 
 try:
+    import animate_client as ac
+except ImportError:
+    ac = None
+
+try:
     import venice_client as vc
 except ImportError:
     vc = None
+
+try:
+    import gpu_client as gc
+    import gpu_workflows as gw
+except ImportError:
+    gc = None
+    gw = None
 
 try:
     import photo_tools as pt
@@ -229,6 +241,48 @@ GENERATE_OPTIONS = [
                      "the base video, then a reference photo or reference "
                      "video of the new model. AI does full-body swaps; "
                      "Face mode is free/local and swaps just the face."),
+     "needs_media": "video",
+     "needs_prompt": False,
+     "paid": True},
+    {"id": "gpu_image_edit",
+     "name": "Edit Photo (Your GPU)",
+     "badge": "$",
+     "cost": "~$0.10/edit (pod time)",
+     "description": ("Edit a photo by instruction on your own RunPod GPU "
+                     "(Qwen-Image-Edit) — the subject stays true to the "
+                     "reference. Open model, no filter. Needs the pod "
+                     "running (see runpod/README.md)."),
+     "needs_media": "image",
+     "needs_prompt": True,
+     "paid": True},
+    {"id": "gpu_i2v",
+     "name": "Animate Photo (Your GPU)",
+     "badge": "$",
+     "cost": "~$1.00/clip (pod time)",
+     "description": ("AI motion via Wan 2.2 on your own RunPod GPU. "
+                     "No per-clip API charge and no platform filter — "
+                     "just pod time. Needs the pod running."),
+     "needs_media": "image",
+     "needs_prompt": True,
+     "paid": True},
+    {"id": "gpu_t2v",
+     "name": "Text to Video (Your GPU)",
+     "badge": "$",
+     "cost": "~$1.00/clip (pod time)",
+     "description": ("AI video from text via Wan 2.2 on your own RunPod "
+                     "GPU. Open model, full parameter control. Needs "
+                     "the pod running."),
+     "needs_media": None,
+     "needs_prompt": True,
+     "paid": True},
+    {"id": "gpu_replace",
+     "name": "Replace Model (Your GPU)",
+     "badge": "$",
+     "cost": "~$1.00/clip (pod time)",
+     "description": ("Put a different model into an existing video via "
+                     "Wan VACE on your own RunPod GPU. Pick the base "
+                     "video AND a reference photo of the new model. "
+                     "Needs the pod running."),
      "needs_media": "video",
      "needs_prompt": False,
      "paid": True},
@@ -417,6 +471,24 @@ JOBS.restore()  # Recover jobs from previous run, if any
 POOL = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 
+def _mux_audio(silent_video: str, audio_source: str, out_path: str) -> str:
+    """Copy silent_video's picture + audio_source's audio into out_path.
+
+    Falls back to a plain copy of silent_video when the source has no
+    audio or ffmpeg fails. Returns out_path.
+    """
+    import subprocess as _sp
+    import shutil as _sh
+    r = _sp.run(
+        ["ffmpeg", "-y", "-i", silent_video, "-i", audio_source,
+         "-map", "0:v:0", "-map", "1:a:0?", "-c:v", "copy",
+         "-c:a", "aac", "-shortest", out_path],
+        capture_output=True, text=True, timeout=900)
+    if r.returncode != 0 or not os.path.isfile(out_path):
+        _sh.copy2(silent_video, out_path)
+    return out_path
+
+
 def _face_lock(video_path: str, ref_photo_path: str, out_path: str,
                workdir: str) -> str:
     """Composite the reference photo's face onto every frame of a video.
@@ -434,20 +506,116 @@ def _face_lock(video_path: str, ref_photo_path: str, out_path: str,
         raise RuntimeError("could not read reference photo")
     silent = os.path.join(workdir, "_facelock_silent.mp4")
     fv.replace_in_video(video_path, src_face, silent)
-    import subprocess as _sp
-    import shutil as _sh
-    r = _sp.run(
-        ["ffmpeg", "-y", "-i", silent, "-i", video_path,
-         "-map", "0:v:0", "-map", "1:a:0?", "-c:v", "copy",
-         "-c:a", "aac", "-shortest", out_path],
-        capture_output=True, text=True, timeout=900)
-    if r.returncode != 0 or not os.path.isfile(out_path):
-        _sh.copy2(silent, out_path)
+    _mux_audio(silent, video_path, out_path)
     try:
         os.remove(silent)
     except OSError:
         pass
     return out_path
+
+
+def _run_gpu_job(job_id: str, job: dict) -> None:
+    """Self-hosted GPU generation on David's RunPod ComfyUI pod.
+
+    kind "gpu_generate"; name is the generate-option id (gpu_image_edit /
+    gpu_i2v / gpu_t2v / gpu_replace). Media flows only between this
+    server and David's own pod — no third-party API is involved. An
+    offline pod raises GpuUnreachableError and the job ends in a clear
+    error state; Studio itself is unaffected. Raises on failure —
+    _run_job's handler records the error.
+    """
+    if gc is None or gw is None:
+        raise RuntimeError("gpu modules not available")
+    p = job["params"]
+    gen_id = job["name"]
+    jobdir = os.path.join(RESULTS_DIR, job_id)
+    os.makedirs(jobdir, exist_ok=True)
+    media_name = p.get("media_name") or ""
+    base = (os.path.splitext(us.safe_name(media_name))[0]
+            if media_name else gen_id)
+
+    def _f(key, default):
+        try:
+            return float(p.get(key, default))
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _i(key, default):
+        return int(_f(key, default))
+
+    def _progress(_job):
+        # Cancellation: the cancel endpoint flips status; interrupt the
+        # pod render and bail with InterruptedError (handled upstream).
+        if (JOBS.get(job_id) or {}).get("status") == "cancelled":
+            try:
+                gc.interrupt()
+            except Exception:
+                pass
+            raise InterruptedError("Job cancelled by user")
+        JOBS.update(job_id, status="running", progress=40,
+                    phase="rendering on your GPU pod")
+
+    video_knobs = dict(
+        negative_prompt=p.get("negative_prompt") or gw.DEFAULT_NEGATIVE,
+        seed=_i("seed", 0), steps=_i("steps", 20), cfg=_f("cfg", 5.0),
+        width=_i("width", 832), height=_i("height", 480),
+        frames=_i("frames", 81), fps=_f("fps", 16.0))
+
+    JOBS.update(job_id, status="running", progress=10,
+                phase="uploading to your GPU pod")
+    if gen_id == "gpu_image_edit":
+        mpath = safe_media_path(media_name)
+        if mpath is None:
+            raise RuntimeError(f"media {media_name!r} disappeared")
+        up = gc.upload_image(mpath)
+        wf = gw.image_edit(
+            up, p.get("prompt", ""),
+            negative_prompt=p.get("negative_prompt", ""),
+            seed=_i("seed", 0), steps=_i("steps", 20), cfg=_f("cfg", 4.0),
+            denoise=_f("denoise", 1.0),
+            width=(int(p["width"]) if p.get("width") else None),
+            height=(int(p["height"]) if p.get("height") else None))
+        suffix, timeout_s = "gpuedit", 1200.0
+    elif gen_id == "gpu_i2v":
+        mpath = safe_media_path(media_name)
+        if mpath is None:
+            raise RuntimeError(f"media {media_name!r} disappeared")
+        up = gc.upload_image(mpath)
+        wf = gw.image_to_video(up, p.get("prompt", ""), **video_knobs)
+        suffix, timeout_s = "gpu_i2v", 3600.0
+    elif gen_id == "gpu_t2v":
+        wf = gw.text_to_video(p.get("prompt", ""), **video_knobs)
+        suffix, timeout_s = "gpu_t2v", 3600.0
+    elif gen_id == "gpu_replace":
+        vpath = safe_media_path(media_name)
+        rpath = safe_media_path(p.get("ref_media_name") or "")
+        if vpath is None or rpath is None:
+            raise RuntimeError("base video or reference photo disappeared")
+        vup = gc.upload_video(vpath)
+        iup = gc.upload_image(rpath)
+        wf = gw.video_replace_model(
+            vup, iup, p.get("prompt", ""),
+            reference_strength=_f("reference_strength", 1.0), **video_knobs)
+        suffix, timeout_s = "gpu_replace", 3600.0
+    else:
+        raise RuntimeError(f"unknown gpu generate option {gen_id!r}")
+
+    JOBS.update(job_id, status="running", progress=25,
+                phase="queued on your GPU pod")
+    saved = gc.run_workflow(wf, jobdir, timeout_s=timeout_s,
+                            poll_interval_s=10.0, progress_cb=_progress)
+    if not saved:
+        raise RuntimeError("GPU pod finished but produced no output files")
+    JOBS.update(job_id, status="running", progress=95,
+                phase="saving result")
+    ext = os.path.splitext(saved[0])[1] or ".bin"
+    result_name = f"{base}_{suffix}{ext}"
+    dest = os.path.join(jobdir, result_name)
+    if os.path.abspath(saved[0]) != os.path.abspath(dest):
+        os.replace(saved[0], dest)
+    JOBS.update(job_id, status="done", progress=100, phase="done",
+                result_url=f"/api/result/{job_id}/{result_name}",
+                result_name=result_name)
 
 
 def _run_job(job_id: str) -> None:
@@ -456,12 +624,16 @@ def _run_job(job_id: str) -> None:
         return
     JOBS.update(job_id, status="running", progress=5, phase="starting")
     try:
+        kind, name, params = job["kind"], job["name"], job["params"]
+        if kind == "gpu_generate":
+            # Self-hosted GPU path resolves its own media (t2v has none).
+            _run_gpu_job(job_id, job)
+            return
         mpath = safe_media_path(job["media"])
         if mpath is None:
             raise RuntimeError(f"media {job['media']!r} disappeared")
         jobdir = os.path.join(RESULTS_DIR, job_id)
         os.makedirs(jobdir, exist_ok=True)
-        kind, name, params = job["kind"], job["name"], job["params"]
         base = os.path.splitext(us.safe_name(job["media"]))[0]
 
         if kind == "style_pack":
@@ -670,6 +842,41 @@ def _run_job(job_id: str) -> None:
                         phase="downloading result")
             result_name = f"{base}_modelreplace.mp4"
             vc.download_to_file(url, os.path.join(jobdir, result_name))
+            JOBS.update(job_id, status="done", progress=100,
+                        phase="done",
+                        result_url=f"/api/result/{job_id}/{result_name}",
+                        result_name=result_name)
+            return
+        elif kind == "animate_replace":
+            # Full-body model replacement via Wan 2.2 Animate on
+            # WaveSpeed: the reference PHOTO's person replaces the
+            # performer in the base video, keeping the source motion,
+            # scene and camera. Output has no audio track — the base
+            # video's audio is muxed back (timing follows the source).
+            if ac is None:
+                raise RuntimeError("animate_client not available")
+            p = job["params"]
+            ref_path = safe_media_path(p.get("ref_media", ""))
+            if ref_path is None:
+                raise RuntimeError("reference photo disappeared")
+            resolution = p.get("resolution", "720p")
+            JOBS.update(job_id, status="running", progress=10,
+                        phase="submitting to WaveSpeed")
+            ajob = ac.submit_replace(ref_path, mpath,
+                                     resolution=resolution)
+            JOBS.update(job_id, status="running", progress=30,
+                        phase="Wan Animate is rendering")
+            url = ac.wait(ajob, timeout_s=1800.0, poll_interval_s=10.0)
+            JOBS.update(job_id, status="running", progress=90,
+                        phase="downloading result")
+            silent = os.path.join(jobdir, f"{base}_animate_silent.mp4")
+            ac.download_to_file(url, silent)
+            result_name = f"{base}_fullreplace.mp4"
+            _mux_audio(silent, mpath, os.path.join(jobdir, result_name))
+            try:
+                os.remove(silent)
+            except OSError:
+                pass
             JOBS.update(job_id, status="done", progress=100,
                         phase="done",
                         result_url=f"/api/result/{job_id}/{result_name}",
@@ -1241,6 +1448,12 @@ class StudioHandler(BaseHTTPRequestHandler):
         if opt["needs_prompt"] and not prompt:
             self._send_json({"error": "a prompt is required"}, 400)
             return
+        # Self-hosted GPU options (RunPod ComfyUI pod): no fal.ai and no
+        # third-party API — handled separately, media goes to David's
+        # own pod only.
+        if gen_id.startswith("gpu_"):
+            self._api_generate_gpu(body, opt)
+            return
         if opt["needs_media"]:
             mpath = safe_media_path(media)
             if mpath is None and not (body.get("reference_images") or
@@ -1375,6 +1588,78 @@ class StudioHandler(BaseHTTPRequestHandler):
         self._send_json({"job_id": job_id, "status": "started",
                          "estimate": opt["cost"]})
 
+    def _api_generate_gpu(self, body, opt):
+        """GPU generate options: queue a gpu_generate job for the pod.
+
+        Body: {id, prompt, media, reference_images?, reference_videos?,
+        params?: {seed, steps, cfg, width, height, frames, fps, denoise,
+        negative_prompt, reference_strength}}. The pod being off is NOT
+        checked here — the job fails soft with a clear 'pod unreachable'
+        error, so the studio never blocks on pod state.
+        """
+        gen_id = opt["id"]
+        if gc is None or gw is None:
+            self._send_json({"error": "gpu modules not available on server"},
+                            500)
+            return
+        try:
+            gc.get_base_url()
+        except gc.GpuNotConfigured as e:
+            self._send_json({"status": "needs_setup", "message": str(e)})
+            return
+        prompt = (body.get("prompt") or "").strip()
+        raw = body.get("params") or {}
+        if not isinstance(raw, dict):
+            self._send_json({"error": "params must be an object"}, 400)
+            return
+        knobs = {k: raw[k] for k in
+                 ("seed", "steps", "cfg", "width", "height", "frames",
+                  "fps", "denoise", "negative_prompt", "reference_strength")
+                 if k in raw}
+        media = body.get("media") or ""
+        params = {"prompt": prompt, **knobs}
+        if gen_id == "gpu_t2v":
+            params["media_name"] = ""
+            job_media = media or "gpu_t2v"
+        elif gen_id == "gpu_replace":
+            # Base video: the selected media if it is one, else the
+            # first reference video (the UI multi-picker sends both).
+            candidates = [media] + list(body.get("reference_videos") or [])
+            base_name = next((n for n in candidates
+                              if n and media_type(n) == "video"), "")
+            ref_images = list(body.get("reference_images") or [])
+            ref_name = ref_images[0] if ref_images else ""
+            if not base_name or safe_media_path(base_name) is None:
+                self._send_json({"error": "pick a base video"}, 400)
+                return
+            if not ref_name or safe_media_path(ref_name) is None:
+                self._send_json(
+                    {"error": "pick a reference photo of the new model"},
+                    400)
+                return
+            if media_type(ref_name) != "image":
+                self._send_json(
+                    {"error": "reference must be a photo"}, 400)
+                return
+            params["media_name"] = base_name
+            params["ref_media_name"] = ref_name
+            job_media = base_name
+        else:  # gpu_image_edit / gpu_i2v: one reference image
+            if safe_media_path(media) is None:
+                self._send_json({"error": f"media {media!r} not found"},
+                                404)
+                return
+            if media_type(media) != "image":
+                self._send_json({"error": "this needs an image"}, 400)
+                return
+            params["media_name"] = media
+            job_media = media
+        job_id = JOBS.new(job_media, "gpu_generate", gen_id, params)
+        POOL.submit(_run_job, job_id)
+        est = gc.estimate_cost_usd(gc.EST_RENDER_S.get(gen_id, 600.0))
+        self._send_json({"job_id": job_id, "status": "started",
+                         "estimate": f"~${est:.2f} of pod time"})
+
     # -- video-to-video / long-video --
 
     def _venice_key_or_setup(self):
@@ -1505,7 +1790,7 @@ class StudioHandler(BaseHTTPRequestHandler):
         ref_media = body.get("ref_media", "")
         mode = body.get("mode", "ai")
         prompt = (body.get("prompt") or "").strip()
-        if mode not in ("face", "ai"):
+        if mode not in ("face", "ai", "animate"):
             self._send_json({"error": f"unknown mode {mode!r}"}, 400)
             return
         mpath = safe_media_path(media)
@@ -1538,6 +1823,57 @@ class StudioHandler(BaseHTTPRequestHandler):
             POOL.submit(_run_job, job_id)
             self._send_json({"job_id": job_id, "status": "started",
                              "estimate": "$0 (local)"})
+            return
+        if mode == "animate":
+            # Wan 2.2 Animate full-body replacement (WaveSpeed).
+            if ac is None:
+                self._send_json(
+                    {"error": "animate client not available on server"},
+                    500)
+                return
+            if ref_type != "image":
+                self._send_json(
+                    {"error": "full-body replace needs a reference photo "
+                              "of your model"}, 400)
+                return
+            try:
+                ac.get_api_key()
+            except Exception as e:
+                self._send_json({"status": "needs_setup",
+                                 "message": str(e)})
+                return
+            resolution = body.get("resolution") or "720p"
+            if resolution not in ac.COST_PER_S:
+                self._send_json(
+                    {"error": f"unknown resolution {resolution!r}"}, 400)
+                return
+            # Estimate from the base video's real duration.
+            duration_s = 5.0
+            try:
+                import subprocess as _sp2
+                pr = _sp2.run(
+                    ["ffprobe", "-v", "error", "-show_entries",
+                     "format=duration", "-of", "csv=p=0", mpath],
+                    capture_output=True, text=True, timeout=30)
+                duration_s = float(pr.stdout.strip() or 5.0)
+            except Exception:
+                pass
+            if duration_s > ac.MAX_DURATION_S:
+                self._send_json(
+                    {"error": f"base video is {duration_s:.0f}s; Wan "
+                              f"Animate caps at {ac.MAX_DURATION_S:.0f}s "
+                              "— trim it first (Edit tab)"}, 400)
+                return
+            est = ac.estimate_cost(duration_s, resolution)
+            job_id = JOBS.new(media, "animate_replace", "wan-animate", {
+                "ref_media": ref_media,
+                "resolution": resolution,
+            })
+            POOL.submit(_run_job, job_id)
+            self._send_json({"job_id": job_id, "status": "started",
+                             "estimate": f"~${est:.2f} "
+                                         f"({duration_s:.0f}s at "
+                                         f"{resolution})"})
             return
         # AI mode (Venice Seedance R2V)
         ok, msg = self._venice_key_or_setup()
