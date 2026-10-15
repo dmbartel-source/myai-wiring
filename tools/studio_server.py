@@ -1045,17 +1045,19 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
             # the source: 32-aligned, ~704 wide, aspect preserved.
             iup = gc.upload_image(ref_paths[0])
             sk = dict(knobs)
-            # SCAIL-2 finish: UNION composite (builder default,
-            # zoned off). David's clarified spec (Oct 15): the
-            # intercourse matches the source frame for frame as an
-            # ACT -- same positions/motion/contact -- performed by
-            # the REPLACED models, not by source pixels. So both
-            # bodies and their contact stay jointly generated; the
-            # composite pastes source only outside BOTH people (the
-            # interiors), with a softened seam (grow 16, feather 8).
-            # The zoned source-pixel-contact build stays available
-            # in the builder (zoned=true) if he ever wants it.
-            sk.setdefault("zoned", False)
+            # SCAIL-2 finish: ZONED (preservation) composite.
+            # David's current spec (Oct 15, supersedes the earlier
+            # act-performed-by-the-models clarification): EVERYTHING
+            # in the original video is preserved; only the female
+            # model is swapped for the reference. So her tracked
+            # region minus the contact patch is the only generated
+            # area; the partner, the room and the contact itself
+            # stay source pixels. (The union finish -- both bodies
+            # and their contact jointly generated -- let the base
+            # model redraw the contact zone and censor it with an
+            # invented towel; it stays available via zoned=false.)
+            # Seam softening: grow 16, feather 8.
+            sk.setdefault("zoned", True)
             sk.setdefault("composite_expand", 16)
             sk.setdefault("composite_feather", 8)
             if info.get("width"):
@@ -1122,6 +1124,7 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                     composite_expand=int(sk.get("composite_expand", 16)),
                     composite_feather=int(sk.get("composite_feather", 8)),
                     gap_swap=bool(p.get("gap_swap")),
+                    zoned=bool(sk.get("zoned")),
                     person_lora_strength=scail_person,
                     cache_id=f"studio-{job_id}",
                     seedvr2_resolution=(1024 if scail_seedvr2 else 0))
