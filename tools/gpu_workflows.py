@@ -539,9 +539,13 @@ def video_replace_model_scail(
     frames: int = 81,
     fps: float = 16.0,
     denoise: float = 1.0,
-    mask_prompt: str = "woman",
+    mask_prompt: str = "person",
     mask_threshold: float = 0.4,
     ref_threshold: float = 0.5,
+    track_objects: int = 4,
+    ref_prompt: str = "person",
+    hero_prompt: str = "woman",
+    hero_frame: int = 8,
     sort_by: str = "left_to_right",
     pose_strength: float = 1.0,
     shift: float = 8.0,
@@ -613,11 +617,12 @@ def video_replace_model_scail(
                "inputs": {"images": ["2", 0], "model": ["12", 0],
                           "conditioning": ["13", 0],
                           "detection_threshold": float(mask_threshold),
-                          "max_objects": 1, "detect_interval": 1}},
+                          "max_objects": int(track_objects),
+                          "detect_interval": 1}},
         "15": {"class_type": "CLIPTextEncode",
-               "inputs": {"text": mask_prompt, "clip": ["12", 1]}},
+               "inputs": {"text": ref_prompt, "clip": ["12", 1]}},
         "16": {"class_type": "SAM3_Detect",
-               "inputs": {"model": ["12", 0], "image": ["3", 0],
+               "inputs": {"model": ["12", 0], "image": ["34", 0],
                           "conditioning": ["15", 0],
                           "threshold": float(ref_threshold),
                           "refine_iterations": 2,
@@ -630,7 +635,7 @@ def video_replace_model_scail(
         "18": {"class_type": "CLIPVisionLoader",
                "inputs": {"clip_name": MODELS["clip_vision_h"]}},
         "19": {"class_type": "CLIPVisionEncode",
-               "inputs": {"clip_vision": ["18", 0], "image": ["3", 0],
+               "inputs": {"clip_vision": ["18", 0], "image": ["34", 0],
                           "crop": "center"}},
         "20": {"class_type": "WanSCAILToVideo",
                "inputs": {"positive": ["9", 0], "negative": ["10", 0],
@@ -644,7 +649,7 @@ def video_replace_model_scail(
                           "pose_video": ["2", 0],
                           "pose_video_mask": ["17", 0],
                           "replacement_mode": True,
-                          "reference_image": ["3", 0],
+                          "reference_image": ["34", 0],
                           "reference_image_mask": ["17", 1],
                           "clip_vision_output": ["19", 0]}},
         "21": {"class_type": "KSamplerSelect",
@@ -661,6 +666,37 @@ def video_replace_model_scail(
         "24": {"class_type": "VAEDecode",
                "inputs": {"samples": ["23", 0], "vae": ["11", 0]}},
     }
+    # Hero reference (v2): the reference model composited into an
+    # actual frame of the source at the original performer's exact
+    # place and scale. SCAIL-2 takes size/placement cues from the
+    # reference, so a full-bleed beach portrait misplaces her
+    # (measured in the research sweep); the hero frame anchors her.
+    # It also carries BOTH identities in the source's own layout --
+    # her pasted in, the partner untouched as himself -- so the
+    # coloured-mask binding (same left-to-right order on both sides)
+    # binds him as a first-class subject instead of scenery the
+    # model smooths away, contact zone included.
+    wf["30"] = {"class_type": "ImageFromBatch",
+                "inputs": {"image": ["2", 0],
+                           "batch_index": int(hero_frame), "length": 1}}
+    wf["31"] = {"class_type": "ImageScale",
+                "inputs": {"image": ["3", 0],
+                           "upscale_method": "lanczos",
+                           "width": int(width), "height": int(height),
+                           "crop": "center"}}
+    wf["32"] = {"class_type": "CLIPTextEncode",
+                "inputs": {"text": hero_prompt, "clip": ["12", 1]}}
+    wf["33"] = {"class_type": "SAM3_Detect",
+                "inputs": {"model": ["12", 0], "image": ["30", 0],
+                           "conditioning": ["32", 0],
+                           "threshold": float(ref_threshold),
+                           "refine_iterations": 2,
+                           "individual_masks": False}}
+    wf["34"] = {"class_type": "ImageCompositeMasked",
+                "inputs": {"destination": ["30", 0],
+                            "source": ["31", 0], "x": 0, "y": 0,
+                            "resize_source": False,
+                            "mask": ["33", 0]}}
     final = ["24", 0]
     if composite:
         wf["25"] = {"class_type": "SAM3_TrackToMask",
