@@ -905,15 +905,19 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
             # the source: 32-aligned, ~704 wide, aspect preserved.
             iup = gc.upload_image(ref_paths[0])
             sk = dict(knobs)
-            # SCAIL-2 finish: NO post-composite. David's judged v2
-            # run (pod 7a01f535) still showed a border around her
-            # with the union composite -- any paste edge reads as a
-            # cutout where the generated person's local lighting
-            # meets the source background, and the research sweep's
-            # established two-person workflow likewise ships the raw
-            # output. Explicit composite=true still re-enables the
-            # union finish for a locked-off shot that needs it.
-            sk.setdefault("composite", False)
+            # SCAIL-2 finish: UNION composite (builder default,
+            # zoned off). David's clarified spec (Oct 15): the
+            # intercourse matches the source frame for frame as an
+            # ACT -- same positions/motion/contact -- performed by
+            # the REPLACED models, not by source pixels. So both
+            # bodies and their contact stay jointly generated; the
+            # composite pastes source only outside BOTH people (the
+            # interiors), with a softened seam (grow 16, feather 8).
+            # The zoned source-pixel-contact build stays available
+            # in the builder (zoned=true) if he ever wants it.
+            sk.setdefault("zoned", False)
+            sk.setdefault("composite_expand", 16)
+            sk.setdefault("composite_feather", 8)
             if info.get("width"):
                 sw, sh = int(info["width"]), int(info["height"])
                 tw = 704 if sw <= 1408 else (sw // 32) * 32
