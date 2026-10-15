@@ -275,6 +275,14 @@ def test_video_replace_model_scail_graph():
     assert wf["20"]["inputs"]["pose_video_mask"] == ["17", 0]
     assert wf["20"]["inputs"]["reference_image_mask"] == ["17", 1]
     assert wf["14"]["inputs"]["max_objects"] == 1
+    # SAM3 conditioning must come from the SAM3 checkpoint's own CLIP
+    # output (node 12, slot 1) -- feeding it UMT5 (node 8) crashes the
+    # track with a matmul shape error (pod-verified Oct 15).
+    assert wf["13"]["inputs"]["clip"] == ["12", 1]
+    assert wf["15"]["inputs"]["clip"] == ["12", 1]
+    # Wan prompt conditioning stays on the UMT5 loader.
+    assert wf["9"]["inputs"]["clip"] == ["8", 0]
+    assert wf["10"]["inputs"]["clip"] == ["8", 0]
     # LoRA chain: UNET -> lightx2v (1.0) -> DPO -> sampling shift 8
     assert wf["5"]["inputs"]["model"] == ["4", 0]
     assert wf["5"]["inputs"]["strength_model"] == 1.0
