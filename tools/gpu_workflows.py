@@ -66,6 +66,7 @@ MODELS = {
     "scail_unet": "wan2.1_14B_SCAIL_2_fp8_scaled.safetensors",
     "scail_dpo_lora": "wan2.1_SCAIL_2_DPO_lora_bf16.safetensors",
     "scail_relight_lora": "wan2.1_SCAIL_2_relight_lora_bf16.safetensors",
+    "scail_person_lora": "skswoman.safetensors",
     "scail_lightx2v_lora":
         "lightx2v_I2V_14B_480p_cfg_step_distill_rank128_bf16.safetensors",
     "clip_vision_h": "clip_vision_h.safetensors",
@@ -563,6 +564,7 @@ def video_replace_model_scail(
     frame_offset: int = 0,
     previous_frame_count: int = 5,
     relight_strength: float = 1.0,
+    person_lora_strength: float = 0.0,
     seedvr2_resolution: int = 0,
     sort_by: str = "left_to_right",
     pose_strength: float = 1.0,
@@ -695,6 +697,17 @@ def video_replace_model_scail(
                                "lora_name": MODELS["scail_relight_lora"],
                                "strength_model": float(relight_strength)}}
         wf["7"]["inputs"]["model"] = ["51", 0]
+    if person_lora_strength:
+        # Person LoRA (skswoman, trained on the reference model's
+        # own frames): last in the LoRA chain so her learned identity
+        # has the final word before sampling.
+        tail = "51" if relight_strength else "6"
+        wf["52"] = {"class_type": "LoraLoaderModelOnly",
+                    "inputs": {"model": [tail, 0],
+                               "lora_name": MODELS["scail_person_lora"],
+                               "strength_model":
+                                   float(person_lora_strength)}}
+        wf["7"]["inputs"]["model"] = ["52", 0]
     # Hero reference (v2): the reference model composited into an
     # actual frame of the source at the original performer's exact
     # place and scale. SCAIL-2 takes size/placement cues from the
@@ -899,6 +912,7 @@ def video_replace_model_scail_gap(
     lightx2v_strength: float = 0.0,
     dpo_strength: float = 1.0,
     relight_strength: float = 1.0,
+    person_lora_strength: float = 0.0,
     pose_strength: float = 1.0,
     sort_by: str = "left_to_right",
     gap_swap: bool = False,
@@ -1020,6 +1034,15 @@ def video_replace_model_scail_gap(
                                "lora_name": MODELS["scail_relight_lora"],
                                "strength_model": float(relight_strength)}}
         wf["7"]["inputs"]["model"] = ["51", 0]
+    if person_lora_strength:
+        # Person LoRA (skswoman): see video_replace_model_scail.
+        tail = "51" if relight_strength else "6"
+        wf["52"] = {"class_type": "LoraLoaderModelOnly",
+                    "inputs": {"model": [tail, 0],
+                               "lora_name": MODELS["scail_person_lora"],
+                               "strength_model":
+                                   float(person_lora_strength)}}
+        wf["7"]["inputs"]["model"] = ["52", 0]
     her = {"image": ["3", 0], "mask": ["33", 0]}
     him = {"image": ["30", 0], "mask": ["37", 0]}
     first, second = (him, her) if gap_swap else (her, him)
