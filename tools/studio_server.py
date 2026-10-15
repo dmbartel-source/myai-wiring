@@ -868,7 +868,7 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
             vup, iup, prompt,
             reference_strength=_f("reference_strength", 1.0),
             mask_prompt=(p.get("mask_prompt") or "woman"),
-            mask_expand=_i("mask_expand", 20), **knobs)
+            mask_expand=_i("mask_expand", 10), **knobs)
         suffix, timeout_s = "gpu_replace", 3600.0
     else:
         raise RuntimeError(f"unknown gpu generate option {gen_id!r}")
@@ -891,7 +891,7 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                 cur = aud
         except Exception:
             pass
-        if gpu_face_ref:
+        if gpu_face_ref and p.get("face_lock", True) not in (False, 0, "false"):
             try:
                 locked = os.path.join(jobdir, "_facelocked.mp4")
                 _face_lock(cur, gpu_face_ref, locked, jobdir)
@@ -2030,7 +2030,8 @@ class StudioHandler(BaseHTTPRequestHandler):
             return
         knobs = {k: raw[k] for k in
                  ("seed", "steps", "cfg", "width", "height", "frames",
-                  "fps", "denoise", "negative_prompt", "reference_strength")
+                  "fps", "denoise", "negative_prompt", "reference_strength",
+                  "mask_prompt", "mask_expand", "face_lock")
                  if k in raw}
         media = body.get("media") or ""
         params = {"prompt": prompt, **knobs}
