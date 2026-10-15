@@ -417,6 +417,39 @@ JOBS.restore()  # Recover jobs from previous run, if any
 POOL = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 
+def _face_lock(video_path: str, ref_photo_path: str, out_path: str,
+               workdir: str) -> str:
+    """Composite the reference photo's face onto every frame of a video.
+
+    This is the true-to-reference step: generative models redraw the
+    person and drift; this puts the reference's actual face back in,
+    tracked per frame, then muxes the video's own audio back.
+    Returns out_path. Raises on failure (callers decide the fallback).
+    """
+    if fv is None:
+        raise RuntimeError("face_vfx module not available")
+    import cv2 as _cv2
+    src_face = _cv2.imread(ref_photo_path)
+    if src_face is None:
+        raise RuntimeError("could not read reference photo")
+    silent = os.path.join(workdir, "_facelock_silent.mp4")
+    fv.replace_in_video(video_path, src_face, silent)
+    import subprocess as _sp
+    import shutil as _sh
+    r = _sp.run(
+        ["ffmpeg", "-y", "-i", silent, "-i", video_path,
+         "-map", "0:v:0", "-map", "1:a:0?", "-c:v", "copy",
+         "-c:a", "aac", "-shortest", out_path],
+        capture_output=True, text=True, timeout=900)
+    if r.returncode != 0 or not os.path.isfile(out_path):
+        _sh.copy2(silent, out_path)
+    try:
+        os.remove(silent)
+    except OSError:
+        pass
+    return out_path
+
+
 def _run_job(job_id: str) -> None:
     job = JOBS.get(job_id)
     if not job:
@@ -536,7 +569,23 @@ def _run_job(job_id: str) -> None:
             dest = os.path.join(jobdir, result_name)
             shutil.copy2(out, dest)
             out = dest
-            result_name = os.path.basename(out)
+            # True-to-reference face lock: the generative model redraws
+            # the person and drifts; composite the source photo's real
+            # face back onto the result. I2V only (source media is the
+            # reference photo). Failure keeps the unlocked result.
+            if (job["params"].get("face_lock") and mode == "i2v"
+                    and media_type(job["media"]) == "image"):
+                try:
+                    JOBS.update(job_id, status="running", progress=95,
+                                phase="locking face to reference")
+                    locked_name = f"{base}_{result_suffix}_facelock.mp4"
+                    _face_lock(dest, mpath,
+                               os.path.join(jobdir, locked_name), jobdir)
+                    result_name = locked_name
+                except Exception:
+                    pass
+            result_name = os.path.basename(
+                os.path.join(jobdir, result_name))
             JOBS.update(job_id, status="done", progress=100,
                         result_url=f"/api/result/{job_id}/{result_name}",
                         result_name=result_name)
@@ -571,35 +620,15 @@ def _run_job(job_id: str) -> None:
             return
         elif kind == "face_replace":
             # Local face replacement: base video + reference photo.
-            # Uses face_vfx.replace_in_video (OpenCV tracking + Poisson
-            # blend), then muxes the original audio back with ffmpeg.
-            if fv is None:
-                raise RuntimeError("face_vfx module not available")
             p = job["params"]
             ref_path = safe_media_path(p.get("ref_media", ""))
             if ref_path is None:
                 raise RuntimeError("reference photo disappeared")
-            import cv2 as _cv2
-            src_face = _cv2.imread(ref_path)
-            if src_face is None:
-                raise RuntimeError("could not read reference photo")
             JOBS.update(job_id, status="running", progress=30,
                         phase="replacing face (local)")
-            silent = os.path.join(jobdir, f"{base}_facereplace_silent.mp4")
-            fv.replace_in_video(mpath, src_face, silent)
-            # Mux original audio back (replace_in_video drops audio).
             result_name = f"{base}_facereplace.mp4"
-            out_path = os.path.join(jobdir, result_name)
-            import subprocess as _sp
-            r = _sp.run(
-                ["ffmpeg", "-y", "-i", silent, "-i", mpath,
-                 "-map", "0:v:0", "-map", "1:a:0?", "-c:v", "copy",
-                 "-c:a", "aac", "-shortest", out_path],
-                capture_output=True, text=True, timeout=600)
-            if r.returncode != 0 or not os.path.isfile(out_path):
-                # No audio in source or mux failed — use silent output.
-                import shutil as _sh3
-                _sh3.copy2(silent, out_path)
+            _face_lock(mpath, ref_path,
+                       os.path.join(jobdir, result_name), jobdir)
             JOBS.update(job_id, status="done", progress=100,
                         phase="done",
                         result_url=f"/api/result/{job_id}/{result_name}",
@@ -750,6 +779,22 @@ def _run_job(job_id: str) -> None:
             result_name = f"{base}_longvideo.mp4"
             import shutil as _sh2
             _sh2.copy2(final, os.path.join(jobdir, result_name))
+            # True-to-reference face lock on the stitched video: put the
+            # reference photo's real face back over the AI's drifted one.
+            if p.get("face_lock") and ref_image:
+                _ref_p = safe_media_path(ref_image)
+                if _ref_p:
+                    try:
+                        JOBS.update(job_id, status="running", progress=97,
+                                    phase="locking face to reference")
+                        _locked_name = f"{base}_longvideo_facelock.mp4"
+                        _face_lock(os.path.join(jobdir, result_name),
+                                   _ref_p,
+                                   os.path.join(jobdir, _locked_name),
+                                   jobdir)
+                        result_name = _locked_name
+                    except Exception:
+                        pass
             JOBS.update(job_id, status="done", progress=100,
                         phase="done",
                         result_url=f"/api/result/{job_id}/{result_name}",
@@ -1257,6 +1302,7 @@ class StudioHandler(BaseHTTPRequestHandler):
                 "prompt": prompt,
                 "model": venice_model,
                 "duration_s": duration_s,
+                "face_lock": bool(body.get("face_lock")),
             })
             POOL.submit(_run_job, job_id)
             est = venice_client.estimate_cost(venice_model, duration_s)
@@ -1321,6 +1367,7 @@ class StudioHandler(BaseHTTPRequestHandler):
             "prompt": prompt,
             "model": "seedance-mini",  # approved route
             "duration_s": 5.0,
+            "face_lock": bool(body.get("face_lock")),
         })
         POOL.submit(_run_job, job_id)
         self._send_json({"job_id": job_id, "status": "started",
@@ -1642,6 +1689,7 @@ class StudioHandler(BaseHTTPRequestHandler):
             "chain_model": chain_model, "chain_mode": chain_mode,
             "quality": quality, "ref_image": ref_image,
             "ref_video": ref_video,
+            "face_lock": bool(body.get("face_lock")),
         })
         POOL.submit(_run_job, job_id)
         self._send_json({"job_id": job_id, "status": "started",
