@@ -60,6 +60,14 @@ MODELS = {
     # SAM3.1 person segmentation/tracking (Comfy-Org/sam3.1) — used
     # to mask the performer out of the source video for VACE swaps.
     "sam3_ckpt": "sam3.1_multiplex_fp16.safetensors",
+    # SCAIL-2 character replacement (Comfy-Org/SCAIL-2) -- end-to-end
+    # replacement: SAM3.1 coloured masks bind identities, no skeleton,
+    # no erase-to-black. fp8 build (17.7 GB) fits beside the VACE set.
+    "scail_unet": "wan2.1_14B_SCAIL_2_fp8_scaled.safetensors",
+    "scail_dpo_lora": "wan2.1_SCAIL_2_DPO_lora_bf16.safetensors",
+    "scail_lightx2v_lora":
+        "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+    "clip_vision_h": "clip_vision_h.safetensors",
 }
 
 DEFAULT_NEGATIVE = (
@@ -515,3 +523,168 @@ def video_replace_model(
         wf["22"]["inputs"]["images"] = ["24", 0]
     return wf
 
+
+
+def video_replace_model_scail(
+    source_video: str,
+    reference_image: str,
+    prompt: str = "",
+    *,
+    negative_prompt: str = DEFAULT_NEGATIVE,
+    seed: int = 0,
+    steps: int = 6,
+    cfg: float = 1.0,
+    width: int = 704,
+    height: int = 544,
+    frames: int = 81,
+    fps: float = 16.0,
+    denoise: float = 1.0,
+    mask_prompt: str = "woman",
+    mask_threshold: float = 0.4,
+    sort_by: str = "left_to_right",
+    pose_strength: float = 1.0,
+    shift: float = 8.0,
+    lightx2v_strength: float = 1.0,
+    dpo_strength: float = 1.0,
+    composite: bool = True,
+    composite_expand: int = 8,
+    composite_feather: int = 8,
+    filename_prefix: str = "myai/scail_replace",
+) -> dict:
+    """SCAIL-2 end-to-end character replacement (single segment).
+
+    The research pick over VACE inpainting: SAM3.1 tracks the performer
+    in the driving video and the subject in the reference, SCAIL2Colored
+    Mask binds the identity by colour, and WanSCAILToVideo regenerates
+    her following the driving frames directly -- no pose skeleton and
+    no erase-to-black silhouette leak (the two VACE hybrid sources).
+    Defaults follow the measured pitfalls: distilled sampler (6 steps,
+    cfg 1) with the LightX2V LoRA at full strength and sampling shift
+    8 -- the popular 0.8/shift-5 settings measurably leak the original
+    performer's details onto the replacement.
+
+    With composite on (default), everything outside her tracked mask
+    is pasted back from the (scaled) source frames, so the room and
+    the partner stay literal source pixels; only she is generated.
+    Long-video segment chaining (previous_frames) is a later layer --
+    frames is one segment (keep 4n+1, <= 321).
+    """
+    frames = _frames_4n1(frames)
+    wf = {
+        "1": {"class_type": "VHS_LoadVideo",
+              "inputs": {"video": source_video, "force_rate": float(fps),
+                         "custom_width": 0, "custom_height": 0,
+                         "frame_load_cap": int(frames),
+                         "skip_first_frames": 0, "select_every_nth": 1,
+                         "format": "AnimateDiff"}},
+        "2": {"class_type": "ImageScale",
+              "inputs": {"image": ["1", 0], "upscale_method": "lanczos",
+                         "width": int(width), "height": int(height),
+                         "crop": "disabled"}},
+        "3": {"class_type": "LoadImage",
+              "inputs": {"image": reference_image}},
+        "4": {"class_type": "UNETLoader",
+              "inputs": {"unet_name": MODELS["scail_unet"],
+                         "weight_dtype": "default"}},
+        "5": {"class_type": "LoraLoaderModelOnly",
+              "inputs": {"model": ["4", 0],
+                         "lora_name": MODELS["scail_lightx2v_lora"],
+                         "strength_model": float(lightx2v_strength)}},
+        "6": {"class_type": "LoraLoaderModelOnly",
+              "inputs": {"model": ["5", 0],
+                         "lora_name": MODELS["scail_dpo_lora"],
+                         "strength_model": float(dpo_strength)}},
+        "7": {"class_type": "ModelSamplingSD3",
+              "inputs": {"model": ["6", 0], "shift": float(shift)}},
+        "8": {"class_type": "CLIPLoader",
+              "inputs": {"clip_name": MODELS["wan_clip"], "type": "wan"}},
+        "9": {"class_type": "CLIPTextEncode",
+              "inputs": {"text": prompt, "clip": ["8", 0]}},
+        "10": {"class_type": "CLIPTextEncode",
+               "inputs": {"text": negative_prompt, "clip": ["8", 0]}},
+        "11": {"class_type": "VAELoader",
+               "inputs": {"vae_name": MODELS["wan_vae"]}},
+        "12": {"class_type": "CheckpointLoaderSimple",
+               "inputs": {"ckpt_name": MODELS["sam3_ckpt"]}},
+        "13": {"class_type": "CLIPTextEncode",
+               "inputs": {"text": mask_prompt, "clip": ["8", 0]}},
+        "14": {"class_type": "SAM3_VideoTrack",
+               "inputs": {"images": ["2", 0], "model": ["12", 0],
+                          "conditioning": ["13", 0],
+                          "detection_threshold": float(mask_threshold),
+                          "max_objects": 1, "detect_interval": 1}},
+        "15": {"class_type": "CLIPTextEncode",
+               "inputs": {"text": mask_prompt, "clip": ["8", 0]}},
+        "16": {"class_type": "SAM3_Detect",
+               "inputs": {"model": ["12", 0], "image": ["3", 0],
+                          "conditioning": ["15", 0],
+                          "threshold": float(mask_threshold),
+                          "refine_iterations": 2,
+                          "individual_masks": False}},
+        "17": {"class_type": "SCAIL2ColoredMask",
+               "inputs": {"driving_track_data": ["14", 0],
+                          "ref_track_data": ["16", 0],
+                          "object_indices": "", "sort_by": sort_by,
+                          "replacement_mode": True}},
+        "18": {"class_type": "CLIPVisionLoader",
+               "inputs": {"clip_name": MODELS["clip_vision_h"]}},
+        "19": {"class_type": "CLIPVisionEncode",
+               "inputs": {"clip_vision": ["18", 0], "image": ["3", 0],
+                          "crop": "center"}},
+        "20": {"class_type": "WanSCAILToVideo",
+               "inputs": {"positive": ["9", 0], "negative": ["10", 0],
+                          "vae": ["11", 0], "width": int(width),
+                          "height": int(height), "length": int(frames),
+                          "batch_size": 1,
+                          "pose_strength": float(pose_strength),
+                          "pose_start": 0.0, "pose_end": 1.0,
+                          "video_frame_offset": 0,
+                          "previous_frame_count": 5,
+                          "pose_video": ["2", 0],
+                          "pose_video_mask": ["17", 0],
+                          "replacement_mode": True,
+                          "reference_image": ["3", 0],
+                          "reference_image_mask": ["17", 1],
+                          "clip_vision_output": ["19", 0]}},
+        "21": {"class_type": "KSamplerSelect",
+               "inputs": {"sampler_name": _WAN_SAMPLER}},
+        "22": {"class_type": "BasicScheduler",
+               "inputs": {"model": ["7", 0], "scheduler": _WAN_SCHEDULER,
+                          "steps": int(steps), "denoise": float(denoise)}},
+        "23": {"class_type": "SamplerCustom",
+               "inputs": {"model": ["7", 0], "add_noise": True,
+                          "noise_seed": int(seed), "cfg": float(cfg),
+                          "positive": ["20", 0], "negative": ["20", 1],
+                          "sampler": ["21", 0], "sigmas": ["22", 0],
+                          "latent_image": ["20", 2]}},
+        "24": {"class_type": "VAEDecode",
+               "inputs": {"samples": ["23", 0], "vae": ["11", 0]}},
+    }
+    final = ["24", 0]
+    if composite:
+        wf["25"] = {"class_type": "SAM3_TrackToMask",
+                    "inputs": {"track_data": ["14", 0],
+                               "object_indices": ""}}
+        wf["26"] = {"class_type": "GrowMask",
+                    "inputs": {"mask": ["25", 0],
+                               "expand": int(composite_expand),
+                               "tapered_corners": True}}
+        wf["27"] = {"class_type": "FeatherMask",
+                    "inputs": {"mask": ["26", 0],
+                               "left": int(composite_feather),
+                               "top": int(composite_feather),
+                               "right": int(composite_feather),
+                               "bottom": int(composite_feather)}}
+        wf["28"] = {"class_type": "ImageCompositeMasked",
+                    "inputs": {"destination": ["2", 0],
+                               "source": ["24", 0], "x": 0, "y": 0,
+                               "resize_source": False,
+                               "mask": ["27", 0]}}
+        final = ["28", 0]
+    wf["29"] = {"class_type": "VHS_VideoCombine",
+                "inputs": {"images": final, "frame_rate": float(fps),
+                           "loop_count": 0,
+                           "filename_prefix": filename_prefix,
+                           "format": "video/h264-mp4", "pingpong": False,
+                           "save_output": True}}
+    return wf
