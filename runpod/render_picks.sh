@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RENDER-V2-V1 — Stage 2d: rebuild + motion render from David's own picked
+# RENDER-V2-V2 — Stage 2d: rebuild + motion render from David's own picked
 # stills. Noor uploads his 16 curated picks to the pod's ComfyUI/input as
 # v2_01.* .. v2_16.* (slot order baked into the names: standing full-body
 # fronts first). This script assembles them into /workspace/avatar_inputs_v2
@@ -19,7 +19,7 @@ LOG=/workspace/avatar_render_v2.log
 DRIVER=/workspace/build_avatar.py
 
 exec > >(tee -a "$LOG") 2>&1
-echo "=== RENDER-V2-V1 $(date) ==="
+echo "=== RENDER-V2-V2 $(date) ==="
 
 fail() { echo "RENDER-V2-FAILED: $1"; exit 1; }
 
@@ -39,6 +39,28 @@ for f in "$SRC"/v2_[0-9][0-9].*; do
 done
 echo "picks found in ComfyUI/input: $n"
 [ "$n" -eq 16 ] || fail "expected 16 v2_NN picks in $SRC, found $n — uploads not complete"
+
+echo "[normalize] padding all refs to 1024x1024 (mixed source sizes break the pipeline's preview strip)"
+"$VPY" - "$REFS" <<'PYEOF'
+import sys, os
+from PIL import Image
+refs = sys.argv[1]
+S = 1024
+for name in sorted(os.listdir(refs)):
+    p = os.path.join(refs, name)
+    if not os.path.isfile(p):
+        continue
+    im = Image.open(p).convert('RGB')
+    im.thumbnail((S, S), Image.LANCZOS)
+    canvas = Image.new('RGB', (S, S), (0, 0, 0))
+    canvas.paste(im, ((S - im.width) // 2, (S - im.height) // 2))
+    out = os.path.splitext(p)[0] + '.jpg'
+    canvas.save(out, quality=95)
+    if out != p:
+        os.remove(p)
+print('normalized all refs to 1024x1024')
+PYEOF
+
 ls -la "$REFS"
 
 cd "$REPO" || exit 1
