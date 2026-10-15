@@ -460,6 +460,35 @@ def test_video_replace_model_scail_gap_swap():
     assert lines[1].startswith("2: the woman")
 
 
+def test_video_replace_model_scail_gap_zoned_finish():
+    wf = gw.video_replace_model_scail_gap("v.mp4", "r.jpg",
+                                          cache_id="job-9", zoned=True)
+    assert_links_valid(wf)
+    # Dedicated single-person tracks drive the zones, reusing the
+    # reference conditionings (hers "woman" [32], his "man" [36]).
+    assert wf["72"]["class_type"] == "SAM3_VideoTrack"
+    assert wf["72"]["inputs"]["conditioning"] == ["32", 0]
+    assert wf["72"]["inputs"]["max_objects"] == 1
+    assert wf["73"]["inputs"]["conditioning"] == ["36", 0]
+    assert wf["73"]["inputs"]["detection_threshold"] == 0.55
+    # Contact patch = grown overlap of both tracks, padded, then
+    # subtracted from her grown track.
+    assert wf["78"]["inputs"]["operation"] == "and"
+    assert wf["81"]["inputs"]["operation"] == "subtract"
+    # Only her zone is generated: the composite destination is the
+    # source frames and its source is the colour-matched generation.
+    assert wf["83"]["class_type"] == "ImageCompositeMasked"
+    assert wf["83"]["inputs"]["destination"] == ["2", 0]
+    assert wf["83"]["inputs"]["source"] == ["35", 0]
+    assert wf["29"]["inputs"]["images"] == ["83", 0]
+    # Union finish is skipped in zoned mode; default stays union.
+    assert "25" not in wf
+    plain = gw.video_replace_model_scail_gap("v.mp4", "r.jpg",
+                                             cache_id="job-9")
+    assert "83" not in plain
+    assert plain["29"]["inputs"]["images"] == ["28", 0]
+
+
 def test_video_seedvr2_upscale_graph():
     wf = gw.video_seedvr2_upscale("v.mp4", resolution=720, fps=24.0)
     assert_links_valid(wf)
