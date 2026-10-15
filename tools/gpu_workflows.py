@@ -57,6 +57,9 @@ MODELS = {
     # Wan VACE 14B (Comfy-Org/Wan_2.1_ComfyUI_repackaged; fp16 is the
     # only 14B build Comfy-Org ships — the H100's 80GB takes it as-is)
     "vace_unet": "wan2.1_vace_14B_fp16.safetensors",
+    # SAM3.1 person segmentation/tracking (Comfy-Org/sam3.1) — used
+    # to mask the performer out of the source video for VACE swaps.
+    "sam3_ckpt": "sam3.1_multiplex_fp16.safetensors",
 }
 
 DEFAULT_NEGATIVE = (
@@ -320,16 +323,29 @@ def video_replace_model(
     fps: float = 16.0,
     denoise: float = 1.0,
     reference_strength: float = 1.0,
+    mask_prompt: str = "woman",
+    mask_expand: int = 20,
+    mask_threshold: float = 0.5,
     shift: float = _WAN_SHIFT,
     filename_prefix: str = "myai/replace",
 ) -> dict:
-    """Swap the subject of a video using a reference photo (Wan VACE 14B).
+    """Swap the performer of a video for a reference model (Wan VACE 14B).
 
-    VACE reference-to-video: the source video supplies motion, scene and
-    camera; the reference image supplies the subject's identity. The
-    prompt (optional) guides the swap in words — passed through exactly
-    as written. reference_strength is VACE's conditioning strength for
-    the reference/control inputs (1.0 = full).
+    Built on ComfyUI's official VACE inpainting recipe (the Oct 14 2026
+    build without it silently returned the source video: VACE received
+    the performer's untouched pixels as its control stream and simply
+    reconstructed them, reference image flashing at the head):
+
+    1. SAM3 tracks the performer (text-prompted, `mask_prompt`) through
+       the source frames; the mask is grown by `mask_expand` px.
+    2. ERASE: the masked region of the control video is painted black
+       (inverted mask composited in) — the original performer never
+       reaches the model, so it cannot be copied.
+    3. WanVaceToVideo regenerates the blacked-out region as the
+       reference subject (reference_image + prompt), driven by the
+       mask's shape/motion and the untouched surroundings.
+    4. TrimVideoLatent removes the reference segment after sampling,
+       so the output is exactly `frames` long with no reference intro.
 
     source_video / reference_image: ComfyUI input filenames (from
     gpu_client.upload_video / upload_image). frames caps how much of
@@ -357,25 +373,61 @@ def video_replace_model(
                          "select_every_nth": 1, "format": "None"}},
         "8": {"class_type": "LoadImage",
               "inputs": {"image": reference_image}},
-        "9": {"class_type": "WanVaceToVideo",
-              "inputs": {"positive": ["5", 0], "negative": ["6", 0],
-                         "vae": ["3", 0], "width": int(width),
-                         "height": int(height), "length": frames,
-                         "batch_size": 1, "strength": reference_strength,
-                         "control_video": ["7", 0],
-                         "reference_image": ["8", 0]}},
-        "10": {"class_type": "KSampler",
-               "inputs": {"model": ["4", 0], "positive": ["9", 0],
-                          "negative": ["9", 1], "latent_image": ["9", 2],
+        # Work at the render size everywhere downstream so frames,
+        # masks and latents agree exactly.
+        "9": {"class_type": "ImageScale",
+              "inputs": {"image": ["7", 0], "upscale_method": "lanczos",
+                         "width": int(width), "height": int(height),
+                         "crop": "disabled"}},
+        # --- SAM3 performer tracking -------------------------------
+        "10": {"class_type": "CheckpointLoaderSimple",
+               "inputs": {"ckpt_name": MODELS["sam3_ckpt"]}},
+        "11": {"class_type": "CLIPTextEncode",
+               "inputs": {"clip": ["10", 1], "text": mask_prompt}},
+        "12": {"class_type": "SAM3_VideoTrack",
+               "inputs": {"images": ["9", 0], "model": ["10", 0],
+                          "conditioning": ["11", 0],
+                          "detection_threshold": mask_threshold,
+                          "max_objects": 4, "detect_interval": 1}},
+        "13": {"class_type": "SAM3_TrackToMask",
+               "inputs": {"track_data": ["12", 0], "object_indices": ""}},
+        "14": {"class_type": "GrowMask",
+               "inputs": {"mask": ["13", 0], "expand": int(mask_expand),
+                          "tapered_corners": True}},
+        # --- erase the performer from the control video ------------
+        "15": {"class_type": "InvertMask",
+               "inputs": {"mask": ["14", 0]}},
+        "16": {"class_type": "MaskToImage",
+               "inputs": {"mask": ["15", 0]}},
+        "17": {"class_type": "ImageCompositeMasked",
+               "inputs": {"destination": ["9", 0], "source": ["16", 0],
+                          "x": 0, "y": 0, "resize_source": False,
+                          "mask": ["14", 0]}},
+        # --- VACE regeneration --------------------------------------
+        "18": {"class_type": "WanVaceToVideo",
+               "inputs": {"positive": ["5", 0], "negative": ["6", 0],
+                          "vae": ["3", 0], "width": int(width),
+                          "height": int(height), "length": frames,
+                          "batch_size": 1, "strength": reference_strength,
+                          "control_video": ["17", 0],
+                          "control_masks": ["14", 0],
+                          "reference_image": ["8", 0]}},
+        "19": {"class_type": "KSampler",
+               "inputs": {"model": ["4", 0], "positive": ["18", 0],
+                          "negative": ["18", 1], "latent_image": ["18", 2],
                           "seed": seed, "steps": steps, "cfg": cfg,
                           "sampler_name": _WAN_SAMPLER,
                           "scheduler": _WAN_SCHEDULER, "denoise": denoise}},
-        "11": {"class_type": "VAEDecode",
-               "inputs": {"samples": ["10", 0], "vae": ["3", 0]}},
-        "12": {"class_type": "VHS_VideoCombine",
-               "inputs": {"images": ["11", 0], "frame_rate": fps,
+        "20": {"class_type": "TrimVideoLatent",
+               "inputs": {"samples": ["19", 0],
+                          "trim_amount": ["18", 3]}},
+        "21": {"class_type": "VAEDecode",
+               "inputs": {"samples": ["20", 0], "vae": ["3", 0]}},
+        "22": {"class_type": "VHS_VideoCombine",
+               "inputs": {"images": ["21", 0], "frame_rate": fps,
                           "loop_count": 0, "filename_prefix": filename_prefix,
                           "format": "video/h264-mp4", "pingpong": False,
                           "save_output": True}},
     }
     return wf
+
