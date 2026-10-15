@@ -774,6 +774,121 @@ def _face_lock(video_path: str, ref_photo_path: str, out_path: str,
     return out_path
 
 
+def _count_frames(path: str) -> int:
+    """Exact frame count via ffprobe; 0 when probing fails."""
+    import subprocess as _sp
+    try:
+        r = _sp.run(["ffprobe", "-v", "error", "-count_frames",
+                     "-select_streams", "v:0", "-show_entries",
+                     "stream=nb_read_frames", "-of", "csv=p=0", path],
+                    capture_output=True, text=True, timeout=120)
+        return int((r.stdout or "0").strip() or 0)
+    except Exception:
+        return 0
+
+
+def _scail_segment(src: str, start_f: int, count: int, fps: float,
+                   out: str) -> None:
+    """Cut an exact frame window of the 16fps timeline from src."""
+    import subprocess as _sp
+    r = _sp.run(["ffmpeg", "-y", "-v", "error",
+                 "-ss", f"{start_f / fps:.3f}", "-i", src,
+                 "-vf", f"fps={fps:g}", "-frames:v", str(count),
+                 "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", out],
+                capture_output=True, text=True, timeout=600)
+    if r.returncode != 0:
+        raise RuntimeError(f"segment extract failed: {r.stderr[-300:]}")
+
+
+def _scail_trim_head(src: str, head: int, out: str) -> None:
+    """Drop the first `head` frames (the re-rendered anchor overlap)."""
+    import subprocess as _sp
+    r = _sp.run(["ffmpeg", "-y", "-v", "error", "-i", src,
+                 "-vf", f"select='gte(n\\,{head})',setpts=N/FRAME_RATE/TB",
+                 "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", out],
+                capture_output=True, text=True, timeout=600)
+    if r.returncode != 0:
+        raise RuntimeError(f"chunk trim failed: {r.stderr[-300:]}")
+
+
+def _run_scail_chunks(gc_, gw_, job_id: str, jobdir: str, vpath: str,
+                      ref_up: str, prompt: str, mask_prompt: str,
+                      mask_threshold: float, sk: dict, info: dict,
+                      progress_cb=None) -> str:
+    """Render a long SCAIL-2 replace in 81-frame chunks chained by
+    5-frame anchors (the model's trained extension recipe: 81-frame
+    chunks, 76-frame step), then stitch. Each chunk after the first
+    re-renders the previous chunk's last 5 frames as its head; those
+    are trimmed at the stitch so the timeline stays exact. Returns
+    the stitched silent video path (the caller's audio mux + Face
+    Lock post-passes run on it unchanged)."""
+    import subprocess as _sp
+    fps = 16.0
+    total = int(float(info.get("duration") or 0.0) * fps)
+    width, height = int(sk["width"]), int(sk["height"])
+    base = {k: v for k, v in sk.items()
+            if k not in ("width", "height", "frames")}
+    step, chunk_len = 76, 81
+    starts = []
+    s = 0
+    while s < total:
+        starts.append(s)
+        s += step
+    if len(starts) > 1 and total - starts[-1] < 17:
+        # A runt tail chunk borrows frames from the previous window.
+        starts[-1] = max(starts[-2] + 17, total - 33)
+    workdir = os.path.join(jobdir, "_scail_chunks")
+    os.makedirs(workdir, exist_ok=True)
+    kept, anchor_up, covered_end = [], None, 0
+    for k, start in enumerate(starts):
+        seg_len = min(chunk_len, total - start)
+        seg = os.path.join(workdir, f"seg_{k:03d}.mp4")
+        _scail_segment(vpath, start, seg_len, fps, seg)
+        seg_up = gc_.upload_video(seg)
+        wf = gw_.video_replace_model_scail(
+            seg_up, ref_up, prompt, mask_prompt=mask_prompt,
+            mask_threshold=mask_threshold, width=width, height=height,
+            frames=seg_len, previous_frames_video=anchor_up,
+            frame_offset=start, **base)
+        JOBS.update(job_id, status="running",
+                    progress=25 + int(60 * k / max(1, len(starts))),
+                    phase=f"rendering chunk {k + 1} of {len(starts)} "
+                          "on your GPU pod")
+        outs = gc_.run_workflow(wf, os.path.join(workdir, f"out_{k:03d}"),
+                                timeout_s=3600.0, poll_interval_s=10.0,
+                                progress_cb=progress_cb)
+        if not outs:
+            raise RuntimeError(
+                f"GPU pod produced no output for chunk {k + 1}")
+        out = outs[0]
+        produced = _count_frames(out) or seg_len
+        head = max(0, covered_end - start)
+        if 0 < head < produced:
+            piece = os.path.join(workdir, f"piece_{k:03d}.mp4")
+            _scail_trim_head(out, head, piece)
+        else:
+            piece = out
+        kept.append(piece)
+        covered_end = start + produced - head
+        if k < len(starts) - 1:
+            anchor = os.path.join(workdir, f"anchor_{k:03d}.mp4")
+            _scail_trim_head(out, max(0, produced - 5), anchor)
+            anchor_up = gc_.upload_video(anchor)
+    if len(kept) == 1:
+        return kept[0]
+    stitched = os.path.join(jobdir, "_scail_stitched.mp4")
+    listfile = os.path.join(workdir, "concat.txt")
+    with open(listfile, "w") as fh:
+        for piece in kept:
+            fh.write(f"file '{os.path.abspath(piece)}'\n")
+    r = _sp.run(["ffmpeg", "-y", "-v", "error", "-f", "concat",
+                 "-safe", "0", "-i", listfile, "-c", "copy", stitched],
+                capture_output=True, text=True, timeout=1800)
+    if r.returncode != 0 or not os.path.exists(stitched):
+        _concat_normalized(kept, stitched, kept[0])
+    return stitched
+
+
 def _run_gpu_job(job_id: str, job: dict) -> None:
     """Self-hosted GPU generation on David's RunPod ComfyUI pod.
 
@@ -823,6 +938,7 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
 
     JOBS.update(job_id, status="running", progress=10,
                 phase="uploading to your GPU pod")
+    scail_chunks = None   # gpu_replace SCAIL: long-video chunk plan
     gpu_face_ref = None   # gpu_replace: face-lock source image
     gpu_src_video = None  # gpu_replace: original video (audio source)
     if gen_id == "gpu_image_edit":
@@ -947,10 +1063,23 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                 "contact, both fully visible throughout, "
                 "photorealistic, natural skin texture, consistent "
                 "lighting")
-            wf = gw.video_replace_model_scail(
-                vup, iup, scail_prompt,
-                mask_prompt=(p.get("mask_prompt") or "person"),
-                mask_threshold=_f("mask_threshold", 0.4), **sk)
+            total_frames = int(float(info.get("duration") or 0.0)
+                               * 16.0)
+            if total_frames > 81:
+                # Long video: 81-frame chunks chained by 5-frame
+                # anchors (see _run_scail_chunks); the single-pass
+                # workflow is built per chunk there instead.
+                scail_chunks = dict(
+                    ref_up=iup, prompt=scail_prompt,
+                    mask_prompt=(p.get("mask_prompt") or "person"),
+                    mask_threshold=_f("mask_threshold", 0.4),
+                    sk=sk, info=info)
+                wf = None
+            else:
+                wf = gw.video_replace_model_scail(
+                    vup, iup, scail_prompt,
+                    mask_prompt=(p.get("mask_prompt") or "person"),
+                    mask_threshold=_f("mask_threshold", 0.4), **sk)
         else:
             iup = gc.upload_image(rpath)
             wf = gw.video_replace_model(
@@ -970,8 +1099,15 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
 
     JOBS.update(job_id, status="running", progress=25,
                 phase="queued on your GPU pod")
-    saved = gc.run_workflow(wf, jobdir, timeout_s=timeout_s,
-                            poll_interval_s=10.0, progress_cb=_progress)
+    if scail_chunks is not None:
+        saved = [_run_scail_chunks(
+            gc, gw, job_id, jobdir, vpath, scail_chunks["ref_up"],
+            scail_chunks["prompt"], scail_chunks["mask_prompt"],
+            scail_chunks["mask_threshold"], scail_chunks["sk"],
+            scail_chunks["info"], progress_cb=_progress)]
+    else:
+        saved = gc.run_workflow(wf, jobdir, timeout_s=timeout_s,
+                                poll_interval_s=10.0, progress_cb=_progress)
     if not saved:
         raise RuntimeError("GPU pod finished but produced no output files")
     if gen_id == "gpu_replace" and gpu_src_video:
