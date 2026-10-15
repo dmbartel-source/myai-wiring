@@ -346,6 +346,16 @@ footer.hint{text-align:center; color:var(--faint); font-size:12.5px; padding:20p
       <button class="bigbtn ghost" id="mr-back">Back</button>
     </div>
 
+    <div id="gen-gpureplace" class="hidden">
+      <h2 class="sec">Replace Model (Your GPU) — base video</h2>
+      <div id="gr-base-sel"></div>
+      <h2 class="sec">Reference model (photo or video)</h2>
+      <div id="gr-ref-sel"></div>
+      <div id="gr-cost" class="note"></div>
+      <button class="bigbtn" id="gr-go">Replace Model on Your GPU</button>
+      <button class="bigbtn ghost" id="gr-back">Back</button>
+    </div>
+
     <!-- LONG VIDEO (chained) -->
     <div id="gen-longvideo" class="hidden">
       <h2 class="sec">Long Video — minutes, one continuous shot</h2>
@@ -1115,7 +1125,7 @@ function qualitySelector(el, levels, current, onChange){
   }
 }
 function showRestyle(){
-  ["#gen-list","#gen-confirm","#gen-result","#gen-longvideo"].forEach(s=>$(s).classList.add("hidden"));
+  ["#gen-list","#gen-confirm","#gen-result","#gen-longvideo","#gen-gpureplace"].forEach(s=>$(s).classList.add("hidden"));
   const p = $("#gen-restyle");
   p.classList.remove("hidden");
   p.scrollIntoView({behavior:"smooth"});
@@ -1178,7 +1188,7 @@ $("#restyle-go").addEventListener("click", async ()=>{
 /* ---------- model replace ---------- */
 let mrBase = null, mrRef = null, mrMode = "combo";
 function showModelReplace(){
-  ["#gen-list","#gen-confirm","#gen-result","#gen-longvideo","#gen-restyle"].forEach(s=>$(s).classList.add("hidden"));
+  ["#gen-list","#gen-confirm","#gen-result","#gen-longvideo","#gen-restyle","#gen-modelreplace","#gen-gpureplace"].forEach(s=>$(s).classList.add("hidden"));
   const p = $("#gen-modelreplace");
   p.classList.remove("hidden");
   p.scrollIntoView({behavior:"smooth"});
@@ -1240,6 +1250,56 @@ $("#mr-go").addEventListener("click", async ()=>{
   }catch(e){ box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
 });
 
+/* ---------- GPU replace model (VACE on David's pod) ---------- */
+let grBase = null, grRef = null;
+function showGpuReplace(){
+  ["#gen-list","#gen-confirm","#gen-result","#gen-longvideo","#gen-restyle","#gen-modelreplace"].forEach(x=>$(x).classList.add("hidden"));
+  const p = $("#gen-gpureplace");
+  p.classList.remove("hidden");
+  p.scrollIntoView({behavior:"smooth"});
+  const bs = $("#gr-base-sel");
+  if(grBase){
+    bs.innerHTML = `<div class="selbar"><img src="${grBase.thumb}"><div><b>${esc(grBase.name)}</b></div><button class="chipbtn" id="gr-base-change">Change</button></div>`;
+    bs.querySelector("#gr-base-change").addEventListener("click", ()=> pickGenMedia("video", m=>{ grBase = m; showGpuReplace(); }));
+  }else{
+    bs.innerHTML = `<button class="bigbtn ghost" id="gr-base-pick">Pick the base video</button>`;
+    bs.querySelector("#gr-base-pick").addEventListener("click", ()=> pickGenMedia("video", m=>{ grBase = m; showGpuReplace(); }));
+  }
+  const rs = $("#gr-ref-sel");
+  if(grRef){
+    rs.innerHTML = `<div class="selbar"><img src="${grRef.thumb}"><div><b>${esc(grRef.name)}</b></div><button class="chipbtn" id="gr-ref-change">Change</button></div>`;
+    rs.querySelector("#gr-ref-change").addEventListener("click", ()=> pickGenMedia("any", m=>{ grRef = m; showGpuReplace(); }));
+  }else{
+    rs.innerHTML = `<button class="bigbtn ghost" id="gr-ref-pick">Pick a reference photo or video</button>`;
+    rs.querySelector("#gr-ref-pick").addEventListener("click", ()=> pickGenMedia("any", m=>{ grRef = m; showGpuReplace(); }));
+  }
+  const c = $("#gr-cost");
+  c.innerHTML = "Runs on <b>your own GPU pod</b> (Wan VACE): every frame is re-rendered with your model in place of the original — same scene, poses, motion and timing. Cost is pod time only (~$1/clip), and nothing is filtered or sent to a third party."
+    + (grRef && grRef.type==="video" ? " A still frame from your reference video will be used as the model image." : "")
+    + " The pod must be running.";
+}
+$("#gr-back").addEventListener("click", ()=>{
+  $("#gen-gpureplace").classList.add("hidden"); $("#gen-list").classList.remove("hidden");
+});
+$("#gr-go").addEventListener("click", async ()=>{
+  if(!grBase){ alert("Pick a base video first."); return; }
+  if(!grRef){ alert("Pick a reference photo or video."); return; }
+  const box = $("#gen-result");
+  box.classList.remove("hidden");
+  box.innerHTML = `<div class="spinner"></div>`;
+  try{
+    const payload = {id:"gpu_replace", prompt:"", media:grBase.name,
+      reference_images: grRef.type==="image" ? [grRef.name] : [],
+      reference_videos: grRef.type==="video" ? [grRef.name] : []};
+    const r = await api("/api/generate", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify(payload)});
+    if(r.status==="needs_setup"){ box.innerHTML = `<div class="note">⚠️ ${esc(r.message)}</div>`; return; }
+    show("result");
+    $("#result-body").innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">Replacing model on your GPU…<br>Estimated <b>${esc(r.estimate||"")}</b></p>`;
+    pollJob(r.job_id);
+  }catch(e){ box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+});
+
 /* ---------- long video ---------- */
 let lvTarget = 60, lvQuality = "standard", lvChainMode = "lastframe", lvOverlap = true;
 let lvFaceLock = true;
@@ -1267,7 +1327,7 @@ function lvCostPerSec(){
   return (m && m.cost_per_s) || 0.128;
 }
 function showLongVideo(){
-  ["#gen-list","#gen-confirm","#gen-result","#gen-restyle"].forEach(s=>$(s).classList.add("hidden"));
+  ["#gen-list","#gen-confirm","#gen-result","#gen-restyle","#gen-gpureplace"].forEach(s=>$(s).classList.add("hidden"));
   const p = $("#gen-longvideo");
   p.classList.remove("hidden");
   p.scrollIntoView({behavior:"smooth"});
@@ -1383,16 +1443,7 @@ onGenTap = function(o){
   if(o.id==="v2v_restyle"){ showRestyle(); return; }
   if(o.id==="long_video"){ showLongVideo(); return; }
   if(o.id==="model_replace"){ showModelReplace(); return; }
-  if(o.id==="gpu_replace"){
-    // Needs BOTH the base video and a reference photo of the new model.
-    pickGenMediaMulti((list)=>{
-      const vid = list.find(m=>m.type==="video");
-      const img = list.find(m=>m.type==="image");
-      if(!vid || !img){ alert("Pick the base video AND a reference photo of the new model."); return; }
-      selected = vid; confirmGen(o, list);
-    });
-    return;
-  }
+  if(o.id==="gpu_replace"){ showGpuReplace(); return; }
   _onGenTap(o);
 };
 
