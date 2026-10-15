@@ -893,7 +893,11 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
         gpu_face_ref = ref_paths[0]
         gpu_src_video = vpath
         vup = gc.upload_video(vpath)
-        engine = (p.get("engine") or "vace").strip().lower()
+        # SCAIL-2 is the primary engine: it is also the DEFAULT when
+        # the request carries no engine (a cached pre-selector Studio
+        # page sends none, and must not silently land on the VACE
+        # fallback -- pod-verified Oct 15, two VACE runs killed).
+        engine = (p.get("engine") or "scail").strip().lower()
         if engine == "scail":
             # SCAIL-2 end-to-end replacement: ONE reference image (the
             # first), not the tiled sheet -- its coloured-mask identity
