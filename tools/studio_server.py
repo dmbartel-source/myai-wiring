@@ -905,14 +905,11 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
             # the source: 32-aligned, ~704 wide, aspect preserved.
             iup = gc.upload_image(ref_paths[0])
             sk = dict(knobs)
-            # Default the preservation composite OFF for SCAIL-2:
-            # David's first judged run showed a visible border around
-            # her and the partner underneath her cut away -- the
-            # composite pastes her inside a mask outline and severs
-            # the occlusion/contact SCAIL-2 solves jointly when it
-            # generates the whole frame. Explicit composite=true in
-            # the request still turns it back on.
-            sk.setdefault("composite", False)
+            # SCAIL-2 v2: the builder's composite is a UNION finish
+            # (source pixels only outside BOTH tracked people), which
+            # never cuts across a body or the contact zone, so it
+            # stays at the builder default (on). The v1 single-mask
+            # composite that drew a border around her is gone.
             if info.get("width"):
                 sw, sh = int(info["width"]), int(info["height"])
                 tw = 704 if sw <= 1408 else (sw // 32) * 32
@@ -924,7 +921,7 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                 sk["cfg"] = 1.0
             wf = gw.video_replace_model_scail(
                 vup, iup, prompt,
-                mask_prompt=(p.get("mask_prompt") or "woman"),
+                mask_prompt=(p.get("mask_prompt") or "person"),
                 mask_threshold=_f("mask_threshold", 0.4), **sk)
         else:
             iup = gc.upload_image(rpath)
