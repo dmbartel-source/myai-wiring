@@ -22,13 +22,19 @@ NEEDS_FFMPEG = pytest.mark.skipif(
 
 @pytest.fixture()
 def clips(tmp_path):
-    """Three 2s test clips with distinct colors."""
+    """Three 2s test clips with distinct colors and internal motion.
+
+    A fade-in ramps brightness so each clip's first frame differs from
+    its last (real visible change — passes the chain's anti-loop QC),
+    and distinct base colors make consecutive end frames differ.
+    """
     paths = []
-    for i, color in enumerate(["red", "green", "blue"]):
+    for i, color in enumerate(["0xFF0000", "0x00FF00", "0x0000FF"]):
         p = str(tmp_path / f"c{i}.mp4")
         subprocess.run(
             ["ffmpeg", "-hide_banner", "-y", "-f", "lavfi",
              "-i", f"color={color}:duration=2:size=320x240:rate=30",
+             "-vf", "fade=t=in:st=0:d=1.8",
              "-c:v", "libx264", "-pix_fmt", "yuv420p", p],
             capture_output=True, check=True, timeout=120)
         paths.append(p)
@@ -68,10 +74,14 @@ def test_segment_prompt_empty_raises():
 def test_beat_prompt_adds_continuity_after_first():
     b0 = lv.beat_prompt("flies over city", 0)
     assert "STRICT CONTINUITY LOCK" not in b0
+    # First clip: action wrapped with end-state + identity anchor.
+    assert "flies over city" in b0
+    assert "EXACTLY the person" in b0
     b1 = lv.beat_prompt("lands on roof", 1)
     assert "STRICT CONTINUITY LOCK" in b1
-    assert "STRICT CONTINUITY LOCK" in b1
-    assert "STRICT CONTINUITY LOCK" in b1
+    assert "lands on roof" in b1
+    # Both carry the explicit no-loop instruction.
+    assert "never loop" in b0 and "never loop" in b1
 
 
 # ------------------------------------------------------------ planning ----
@@ -175,10 +185,102 @@ def test_run_chain_with_fake_venice(tmp_path, clips):
     # 3 clips submitted
     assert len(calls) == 3
     # clip 0: first-frame I2V (V2V proved unreliable; see longvideo.py)
-    assert calls[0]["prompt"] == "hero flies"
+    assert "hero flies" in calls[0]["prompt"]
     assert "image_url" in calls[0]
     # clips 1-2: last-frame I2V with continuity tail, NOT the raw beat
-    assert calls[1]["prompt"].startswith("hero lands")
+    assert "hero lands" in calls[1]["prompt"]
     assert "STRICT CONTINUITY LOCK" in calls[1]["prompt"]
     assert "image_url" in calls[1]
-    assert calls[2]["prompt"].startswith("hero looks out")
+    assert "hero looks out" in calls[2]["prompt"]
+    # every clip carries the anti-loop negative prompt
+    for c in calls:
+        assert "looping" in (c.get("negative_prompt") or "")
+
+
+# ---------------------------------------------------------- anti-loop QC ----
+
+def _make_video(path, vf=None, color="red"):
+    cmd = ["ffmpeg", "-hide_banner", "-y", "-f", "lavfi",
+           "-i", f"color={color}:duration=2:size=320x240:rate=30"]
+    if vf:
+        cmd += ["-vf", vf]
+    cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)]
+    subprocess.run(cmd, capture_output=True, check=True, timeout=120)
+    return str(path)
+
+
+def test_signature_diff_basics():
+    a = bytes([100] * 1024)
+    assert lv._signature_diff(a, a) == 0.0
+    b = bytes([110] * 1024)
+    assert lv._signature_diff(a, b) == 10.0
+    assert lv._signature_diff(None, b) is None
+    assert lv._signature_diff(a, b"short") is None
+
+
+@NEEDS_FFMPEG
+def test_clip_qc_rejects_static_accepts_motion(tmp_path):
+    static = _make_video(tmp_path / "static.mp4")
+    ok, reason, _ = lv._clip_qc(static, None)
+    assert not ok and "static" in reason
+    moving = _make_video(tmp_path / "moving.mp4", vf="fade=t=in:st=0:d=1.8")
+    ok, reason, sig = lv._clip_qc(moving, None)
+    assert ok, reason
+    assert sig is not None
+
+
+@NEEDS_FFMPEG
+def test_clip_qc_rejects_non_advancing(tmp_path):
+    moving = _make_video(tmp_path / "m1.mp4", vf="fade=t=in:st=0:d=1.8")
+    _, _, last_sig = lv._clip_qc(moving, None)
+    # Same clip again ends in the same place -> not advancing.
+    ok, reason, _ = lv._clip_qc(moving, last_sig)
+    assert not ok and "previous" in reason
+
+
+@NEEDS_FFMPEG
+def test_run_chain_qc_retries_with_escalation(tmp_path, clips):
+    """First download is a static (looping) clip: the chain must reject
+    it and resubmit with the escalated anti-loop prompt."""
+    from video_edit import extract_last_frame
+
+    static = _make_video(tmp_path / "static.mp4")
+    calls = []
+    downloads = {"n": 0}
+
+    def fake_submit(a):
+        calls.append(dict(a))
+        return {"job": len(calls)}
+
+    def fake_wait(job):
+        return "stub"
+
+    def fake_download(url, dest):
+        downloads["n"] += 1
+        # 1st download overall = static (rejected); rest = moving clips.
+        src = static if downloads["n"] == 1 else clips[(downloads["n"] - 2) % 3]
+        shutil.copy2(src, dest)
+        return dest
+
+    beats = ["hero flies", "hero lands"]
+    lv.run_chain(
+        beats=beats,
+        clip_duration_s=15.0,
+        chain_mode="lastframe",
+        submit_clip=fake_submit,
+        wait_clip=fake_wait,
+        download_clip=fake_download,
+        extract_frame_fn=extract_last_frame,
+        file_to_url_fn=lambda p: "data:video/mp4;base64,STUB",
+        workdir=str(tmp_path / "chain"),
+        ref_image_path=None,
+        ref_video_path=clips[0],
+        i2v_model_id="venice-wan27-uncensored",
+        v2v_model_id="venice-wan27-v2v",
+        resolution="720p",
+        overlap_s=0.0,
+        progress_cb=lambda i, n, ph: None,
+    )
+    # clip 0 took 2 submissions (1 rejected), clip 1 took 1.
+    assert len(calls) == 3
+    assert "CRITICAL CORRECTION" in calls[1]["prompt"]
