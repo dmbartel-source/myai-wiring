@@ -1,0 +1,36 @@
+# MYAI GPU pod model list — single source of truth for downloads.
+#
+# Format (whitespace-separated, one model per line):
+#   <hf_repo>  <path_in_repo>  <target_subdir_under_models/>
+#
+# setup_pod.sh downloads every line with hf_transfer into
+# <ComfyUI>/models/<target_subdir>/<basename of path_in_repo>.
+# tools/gpu_workflows.py MODELS must name exactly these basenames
+# (enforced by tests/test_gpu_workflows.py).
+#
+# Sizes are approximate (GB, as listed on Hugging Face, Oct 2026).
+# Total: ~128 GB — see runpod/README.md for the volume-size note.
+
+# --- Qwen-Image-Edit-2509 (image_edit) -------------------------------------
+# ~20.3 GB
+Comfy-Org/Qwen-Image-Edit_ComfyUI	split_files/diffusion_models/qwen_image_edit_2509_fp8_e4m3fn.safetensors	diffusion_models
+# ~8.8 GB
+Comfy-Org/Qwen-Image_ComfyUI	split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors	text_encoders
+# ~0.3 GB
+Comfy-Org/Qwen-Image_ComfyUI	split_files/vae/qwen_image_vae.safetensors	vae
+
+# --- Wan 2.2 14B FP8 (image_to_video / text_to_video) -----------------------
+# ~14.3 GB each
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors	diffusion_models
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors	diffusion_models
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	split_files/diffusion_models/wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors	diffusion_models
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	split_files/diffusion_models/wan2.2_t2v_low_noise_14B_fp8_scaled.safetensors	diffusion_models
+# ~6.7 GB (shared UMT5 text encoder, Wan 2.1 repackaged repo)
+Comfy-Org/Wan_2.1_ComfyUI_repackaged	split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors	text_encoders
+# ~0.3 GB (Wan 2.2 14B uses the 2.1 VAE)
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	split_files/vae/wan_2.1_vae.safetensors	vae
+
+# --- Wan VACE 14B (video_replace_model) --------------------------------------
+# ~34.7 GB — fp16 is the only 14B VACE build Comfy-Org ships (no FP8);
+# the H100 80GB runs it natively.
+Comfy-Org/Wan_2.1_ComfyUI_repackaged	split_files/diffusion_models/wan2.1_vace_14B_fp16.safetensors	diffusion_models
