@@ -187,12 +187,12 @@ def test_video_replace_model_erases_performer_before_vace():
     comp = nodes_of(wf, "ImageCompositeMasked")["17"]["inputs"]
     assert comp["destination"] == ["9", 0]
     assert comp["source"] == ["16", 0]      # inverted mask as image
-    assert comp["mask"] == ["14", 0]
+    assert comp["mask"] == ["31", 0]        # contact-protected mask
     inv = nodes_of(wf, "InvertMask")["15"]["inputs"]
-    assert inv["mask"] == ["14", 0]
+    assert inv["mask"] == ["31", 0]
     vace = nodes_of(wf, "WanVaceToVideo")["18"]["inputs"]
     assert vace["control_video"] == ["17", 0]   # the ERASED video
-    assert vace["control_masks"] == ["14", 0]
+    assert vace["control_masks"] == ["31", 0]
     trim = nodes_of(wf, "TrimVideoLatent")["20"]["inputs"]
     assert trim["samples"] == ["19", 0]
     assert trim["trim_amount"] == ["18", 3]
@@ -201,13 +201,41 @@ def test_video_replace_model_erases_performer_before_vace():
     # Composite: only the performer's region is pasted over the
     # ORIGINAL frames; everything else stays the source pixels.
     feather = nodes_of(wf, "FeatherMask")["23"]["inputs"]
-    assert feather["mask"] == ["14", 0]
+    assert feather["mask"] == ["31", 0]
     paste = nodes_of(wf, "ImageCompositeMasked")["24"]["inputs"]
     assert paste["destination"] == ["9", 0]
     assert paste["source"] == ["21", 0]
     assert paste["mask"] == ["23", 0]
     combine = nodes_of(wf, "VHS_VideoCombine")["22"]["inputs"]
     assert combine["images"] == ["24", 0]
+
+
+def test_video_replace_model_contact_zone_stays_source():
+    """The partner is tracked; where the bodies interlock, her mask is
+    cut back so the contact/genital region is never regenerated."""
+    wf = gw.video_replace_model("base.mp4", "newmodel.png")
+    assert_links_valid(wf)
+    partner_text = nodes_of(wf, "CLIPTextEncode")["25"]["inputs"]
+    assert partner_text["text"] == "man"
+    track2 = nodes_of(wf, "SAM3_VideoTrack")["26"]["inputs"]
+    assert track2["conditioning"] == ["25", 0]
+    inter = nodes_of(wf, "MaskComposite")["29"]["inputs"]
+    assert inter["operation"] == "and"
+    assert inter["destination"] == ["14", 0]
+    assert inter["source"] == ["28", 0]
+    final = nodes_of(wf, "MaskComposite")["31"]["inputs"]
+    assert final["operation"] == "subtract"
+    assert final["destination"] == ["14", 0]
+    assert final["source"] == ["30", 0]
+
+
+def test_video_replace_model_contact_protection_can_be_disabled():
+    wf = gw.video_replace_model("base.mp4", "newmodel.png",
+                                protect_contact=False)
+    assert_links_valid(wf)
+    assert "31" not in wf and "26" not in wf
+    vace = nodes_of(wf, "WanVaceToVideo")["18"]["inputs"]
+    assert vace["control_masks"] == ["14", 0]
 
 
 # -------------------------------------------------------------- escape hatch --
