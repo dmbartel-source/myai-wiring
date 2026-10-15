@@ -405,8 +405,10 @@ let pollTimer = null;
 let pendingGen = null;        // {opt, media}
 
 function show(name){
+  const target = $("#screen-"+name);
+  if(!target) return;  // unknown screen: never blank the whole app
   document.querySelectorAll(".screen").forEach(s=>s.classList.remove("active"));
-  $("#screen-"+name).classList.add("active");
+  target.classList.add("active");
   document.querySelectorAll("nav button").forEach(b=>
     b.classList.toggle("active", b.dataset.screen===name));
   window.scrollTo(0,0);
@@ -775,7 +777,7 @@ function pickGenMedia(type, cb){
       g.appendChild(d);
     }
   });
-  show("generate");
+  show("create");
 }
 // Multi-reference picker for reference-to-video: 1 photo, or 2-9 photos
 // and up to 3 short clips for better character consistency.
@@ -828,7 +830,7 @@ function pickGenMediaMulti(cb){
     w.appendChild(doneBtn); w.appendChild(cancelBtn);
     refresh();
   });
-  show("generate");
+  show("create");
 }
 // Uncensored Venice I2V models with their max durations
 const UNCENSORED_I2V_MODELS = [
@@ -900,7 +902,7 @@ function confirmGen(o, refs){
       `</div>` : "";
   $("#gen-confirm").classList.remove("hidden");
   $("#gen-confirm").scrollIntoView({behavior:"smooth"});
-  show("generate");
+  show("create");
 }
 $("#gen-confirm-no").addEventListener("click", ()=>{
   $("#gen-confirm").classList.add("hidden"); pendingGen = null;
