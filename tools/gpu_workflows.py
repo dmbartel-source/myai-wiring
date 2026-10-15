@@ -547,6 +547,11 @@ def video_replace_model_scail(
     hero_prompt: str = "woman",
     hero_frame: int = 8,
     color_match: bool = True,
+    zoned: bool = True,
+    partner_prompt: str = "man",
+    partner_threshold: float = 0.55,
+    contact_reach: int = 24,
+    contact_pad: int = 16,
     sort_by: str = "left_to_right",
     pose_strength: float = 1.0,
     shift: float = 8.0,
@@ -712,7 +717,76 @@ def video_replace_model_scail(
                                "multithread": True}}
         gen = ["35", 0]
     final = gen
-    if composite:
+    if composite and zoned:
+        # Zoned finish (David's requirement, Oct 15): the room, the
+        # partner, and the CONTACT patch stay SOURCE pixels -- never
+        # generated -- so they match the reference video frame for
+        # frame by construction. Only her body outside the contact
+        # patch comes from the generation. Zone masks come from two
+        # dedicated single-person tracks (deterministic, unlike
+        # object indices in the shared "person" track). The contact
+        # patch needs BOTH grown masks to overlap, so a sprawling
+        # partner track alone can never eat her zone.
+        wf["36"] = {"class_type": "CLIPTextEncode",
+                    "inputs": {"text": hero_prompt, "clip": ["12", 1]}}
+        wf["37"] = {"class_type": "SAM3_VideoTrack",
+                    "inputs": {"images": ["2", 0], "model": ["12", 0],
+                               "conditioning": ["36", 0],
+                               "detection_threshold":
+                                   float(mask_threshold),
+                               "max_objects": 1, "detect_interval": 1}}
+        wf["38"] = {"class_type": "CLIPTextEncode",
+                    "inputs": {"text": partner_prompt,
+                               "clip": ["12", 1]}}
+        wf["39"] = {"class_type": "SAM3_VideoTrack",
+                    "inputs": {"images": ["2", 0], "model": ["12", 0],
+                               "conditioning": ["38", 0],
+                               "detection_threshold":
+                                   float(partner_threshold),
+                               "max_objects": 1, "detect_interval": 1}}
+        wf["40"] = {"class_type": "SAM3_TrackToMask",
+                    "inputs": {"track_data": ["37", 0],
+                               "object_indices": ""}}
+        wf["41"] = {"class_type": "SAM3_TrackToMask",
+                    "inputs": {"track_data": ["39", 0],
+                               "object_indices": ""}}
+        wf["42"] = {"class_type": "GrowMask",
+                    "inputs": {"mask": ["40", 0],
+                               "expand": int(contact_reach),
+                               "tapered_corners": True}}
+        wf["43"] = {"class_type": "GrowMask",
+                    "inputs": {"mask": ["41", 0],
+                               "expand": int(contact_reach),
+                               "tapered_corners": True}}
+        wf["44"] = {"class_type": "MaskComposite",
+                    "inputs": {"destination": ["42", 0],
+                               "source": ["43", 0], "x": 0, "y": 0,
+                               "operation": "and"}}
+        wf["45"] = {"class_type": "GrowMask",
+                    "inputs": {"mask": ["44", 0],
+                               "expand": int(contact_pad),
+                               "tapered_corners": True}}
+        wf["46"] = {"class_type": "GrowMask",
+                    "inputs": {"mask": ["40", 0],
+                               "expand": int(composite_expand),
+                               "tapered_corners": True}}
+        wf["47"] = {"class_type": "MaskComposite",
+                    "inputs": {"destination": ["46", 0],
+                               "source": ["45", 0], "x": 0, "y": 0,
+                               "operation": "subtract"}}
+        wf["48"] = {"class_type": "FeatherMask",
+                    "inputs": {"mask": ["47", 0],
+                               "left": int(composite_feather),
+                               "top": int(composite_feather),
+                               "right": int(composite_feather),
+                               "bottom": int(composite_feather)}}
+        wf["49"] = {"class_type": "ImageCompositeMasked",
+                    "inputs": {"destination": ["2", 0],
+                               "source": gen, "x": 0, "y": 0,
+                               "resize_source": False,
+                               "mask": ["48", 0]}}
+        final = ["49", 0]
+    elif composite:
         wf["25"] = {"class_type": "SAM3_TrackToMask",
                     "inputs": {"track_data": ["14", 0],
                                "object_indices": ""}}
