@@ -100,7 +100,7 @@ nohup .venv/bin/accelerate launch --num_cpu_threads_per_process 1 \
   --optimizer_type adamw8bit --learning_rate 2e-4 \
   --lr_scheduler cosine --lr_warmup_steps 20 \
   --timestep_sampling shift --discrete_flow_shift 3.0 \
-  --model_prediction_type raw --guidance_scale 1.0 \
+  --guidance_scale 1.0 \
   --scail2_history_prob 0.5 --scail2_history_latent_frames 2 \
   --max_train_epochs 16 --save_every_n_epochs 4 \
   --seed 42 --output_dir /workspace/lora_out --output_name skswoman \
