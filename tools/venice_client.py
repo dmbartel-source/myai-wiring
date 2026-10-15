@@ -353,13 +353,23 @@ def submit(
                 attempts=attempt + 1,
             )
         except VeniceConsentRequired:
-            # 409 needs_consent: Venice asks for the likeness
-            # attestation before accepting face jobs. It is not a
-            # charge and not a refusal — resubmitting the same
-            # (attested) request answers it. Once only.
+            # 409 needs_consent: Venice's documented handshake —
+            # resubmit the SAME body plus a consents.seedance object
+            # with all three confirmations true (no extra fields;
+            # the server owns the policy version and rejects extras
+            # with 400). Not a charge and not a refusal. David has
+            # explicitly given this attestation as a standing
+            # instruction: every model is AI-generated or a
+            # consenting adult who consented to video use, vetted by
+            # him before upload. Once only.
             if consent_retried:
                 raise
             consent_retried = True
+            payload["consents"] = {"seedance": {
+                "confirmed_terms_and_privacy": True,
+                "confirmed_legal_right": True,
+                "confirmed_screening_acknowledged": True,
+            }}
         except VeniceTransientError as e:
             last_err = e
             time.sleep(2 ** attempt)
