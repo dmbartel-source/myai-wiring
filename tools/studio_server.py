@@ -613,6 +613,30 @@ def _concat_normalized(parts: list, out_path: str, like_path: str) -> None:
                            + (r.stderr or "")[:200])
 
 
+def _ensure_photo_ref(ref_path: str, jobdir: str) -> str:
+    """Reference image path for a photo or video reference.
+
+    Face Replace and Wan Animate take a still image of the model.
+    When the reference is a VIDEO, grab a frame from early in the
+    clip (face usually visible near the start) and use that — so a
+    video of the model works as a reference everywhere.
+    """
+    if media_type(os.path.basename(ref_path)) == "image":
+        return ref_path
+    info = _probe_video_info(ref_path)
+    dur = info.get("duration") or 0.0
+    at = min(2.0, dur / 4.0) if dur else 0.0
+    out = os.path.join(jobdir, "ref_frame.jpg")
+    import subprocess as _sp
+    r = _sp.run(["ffmpeg", "-y", "-v", "error", "-ss", f"{at:.2f}",
+                 "-i", ref_path, "-frames:v", "1", "-q:v", "2", out],
+                capture_output=True, text=True, timeout=120)
+    if r.returncode != 0 or not os.path.exists(out):
+        raise RuntimeError("could not pull a still frame from the "
+                           "reference video")
+    return out
+
+
 def _mux_audio(silent_video: str, audio_source: str, out_path: str) -> str:
     """Copy silent_video's picture + audio_source's audio into out_path.
 
@@ -938,6 +962,7 @@ def _run_job(job_id: str) -> None:
             ref_path = safe_media_path(p.get("ref_media", ""))
             if ref_path is None:
                 raise RuntimeError("reference photo disappeared")
+            ref_path = _ensure_photo_ref(ref_path, jobdir)
             JOBS.update(job_id, status="running", progress=30,
                         phase="replacing face (local)")
             result_name = f"{base}_facereplace.mp4"
@@ -1023,6 +1048,9 @@ def _run_job(job_id: str) -> None:
             ref_path = safe_media_path(p.get("ref_media", ""))
             if ref_path is None:
                 raise RuntimeError("reference photo disappeared")
+            # A video reference works too: a still frame of the model
+            # is pulled from it and used as the Animate reference.
+            ref_path = _ensure_photo_ref(ref_path, jobdir)
             resolution = p.get("resolution", "720p")
             # Videos longer than Wan Animate's 120s per-job cap are
             # split into chunks, each replaced separately, then
@@ -2026,10 +2054,10 @@ class StudioHandler(BaseHTTPRequestHandler):
                     {"error": "face replacement not available on server"},
                     500)
                 return
-            if ref_type != "image":
+            if ref_type not in ("image", "video"):
                 self._send_json(
-                    {"error": "face replacement needs a reference photo"},
-                    400)
+                    {"error": "face replacement needs a reference photo "
+                              "or video"}, 400)
                 return
             job_id = JOBS.new(media, "face_replace", "local", {
                 "ref_media": ref_media,
@@ -2047,10 +2075,10 @@ class StudioHandler(BaseHTTPRequestHandler):
                     {"error": "animate client not available on server"},
                     500)
                 return
-            if ref_type != "image":
+            if ref_type not in ("image", "video"):
                 self._send_json(
                     {"error": "full-body replace needs a reference photo "
-                              "of your model"}, 400)
+                              "or video of your model"}, 400)
                 return
             try:
                 ac.get_api_key()
