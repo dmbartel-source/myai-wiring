@@ -349,7 +349,7 @@ footer.hint{text-align:center; color:var(--faint); font-size:12.5px; padding:20p
     <div id="gen-gpureplace" class="hidden">
       <h2 class="sec">Replace Model (Your GPU) — base video</h2>
       <div id="gr-base-sel"></div>
-      <h2 class="sec">Reference model — up to 4 photos, or 1 video</h2>
+      <h2 class="sec">Reference model — up to 4 (photos + 1 video)</h2>
       <div id="gr-ref-sel"></div>
       <div id="gr-cost" class="note"></div>
       <textarea id="gr-prompt" rows="2" placeholder="Optional: describe the result (e.g. 'fully nude, long dark wavy hair'). Blank = standard identity prompt."></textarea>
@@ -1269,21 +1269,24 @@ function showGpuReplace(){
   const rs = $("#gr-ref-sel");
   const hasVideo = grRefs.some(m=>m.type==="video");
   let html = grRefs.map((m,i)=>`<div class="selbar"><img src="${m.thumb}"><div><b>${esc(m.name)}</b></div><button class="chipbtn" data-rm="${i}">Remove</button></div>`).join("");
-  if(!hasVideo && grRefs.length < 4){
-    html += `<button class="bigbtn ghost" id="gr-ref-add">${grRefs.length ? "Add another reference photo" : "Pick reference photo(s) or a video"}</button>`;
+  if(grRefs.length < 4){
+    html += `<button class="bigbtn ghost" id="gr-ref-add">${grRefs.length ? "Add another reference (photo or video)" : "Pick reference photo(s) or a video"}</button>`;
   }
   rs.innerHTML = html;
   rs.querySelectorAll("[data-rm]").forEach(b=> b.addEventListener("click", ()=>{ grRefs.splice(+b.dataset.rm, 1); showGpuReplace(); }));
   const add = rs.querySelector("#gr-ref-add");
   if(add) add.addEventListener("click", ()=> pickGenMedia("any", m=>{
-    if(m.type==="video"){ grRefs = [m]; }
+    if(m.type==="video"){
+      if(grRefs.some(x=>x.type==="video")){ alert("Only one reference video — remove the current one first."); return; }
+      grRefs.push(m);
+    }
     else if(!grRefs.some(x=>x.name===m.name)){ grRefs.push(m); }
     showGpuReplace();
   }));
   const c = $("#gr-cost");
   c.innerHTML = "Runs on <b>your own GPU pod</b> (Wan VACE): every frame is re-rendered with your model in place of the original — same scene, poses, motion and timing. Cost is pod time only (~$1/clip), and nothing is filtered or sent to a third party."
-    + (hasVideo ? " A still frame from your reference video will be used as the model image." : "")
-    + (grRefs.length > 1 ? ` Your ${grRefs.length} photos are tiled into ONE reference sheet automatically — more angles of the same look = steadier identity. Best results: photos from the same shoot, with one sharp full-body shot.` : "")
+    + (hasVideo && grRefs.length === 1 ? " A still frame from your reference video will be used as the model image." : "")
+    + (grRefs.length > 1 ? ` Your ${grRefs.length} references are tiled into ONE reference sheet automatically — more angles of the same look = steadier identity. Best results: same shoot, with one sharp full-body shot.` : "")
     + " The pod must be running.";
 }
 $("#gr-back").addEventListener("click", ()=>{
