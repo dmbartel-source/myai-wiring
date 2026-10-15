@@ -546,6 +546,7 @@ def video_replace_model_scail(
     ref_prompt: str = "person",
     hero_prompt: str = "woman",
     hero_frame: int = 8,
+    color_match: bool = True,
     sort_by: str = "left_to_right",
     pose_strength: float = 1.0,
     shift: float = 8.0,
@@ -697,7 +698,20 @@ def video_replace_model_scail(
                             "source": ["31", 0], "x": 0, "y": 0,
                             "resize_source": False,
                             "mask": ["33", 0]}}
-    final = ["24", 0]
+    gen = ["24", 0]
+    if color_match:
+        # SCAIL-2 output carries a small green VAE cast (measured:
+        # background ~-5/channel, red decays fastest). Reinhard
+        # colour-match the generated frames toward the source
+        # frames before any composite or output -- the finish the
+        # research sweep prescribes.
+        wf["35"] = {"class_type": "ColorMatch",
+                    "inputs": {"image_ref": ["2", 0],
+                               "image_target": ["24", 0],
+                               "method": "reinhard", "strength": 1.0,
+                               "multithread": True}}
+        gen = ["35", 0]
+    final = gen
     if composite:
         wf["25"] = {"class_type": "SAM3_TrackToMask",
                     "inputs": {"track_data": ["14", 0],
@@ -714,7 +728,7 @@ def video_replace_model_scail(
                                "bottom": int(composite_feather)}}
         wf["28"] = {"class_type": "ImageCompositeMasked",
                     "inputs": {"destination": ["2", 0],
-                               "source": ["24", 0], "x": 0, "y": 0,
+                               "source": gen, "x": 0, "y": 0,
                                "resize_source": False,
                                "mask": ["27", 0]}}
         final = ["28", 0]
