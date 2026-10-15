@@ -1,5 +1,5 @@
 #!/bin/bash
-# AVATAR-INSTALL-V1 — install the LHM++ virtual-body avatar stack on the pod.
+# AVATAR-INSTALL-V2 — install the LHM++ virtual-body avatar stack on the pod.
 # Everything lands in a DEDICATED venv (/workspace/avatar-venv) and repo dir
 # (/workspace/LHM-plusplus) so ComfyUI's own python environment is untouched.
 # Safe to re-run: completed steps are skipped.
@@ -7,7 +7,7 @@
 set -u
 LOG=/workspace/avatar_install.log
 exec > >(tee -a "$LOG") 2>&1
-echo "=== AVATAR-INSTALL-V1 starting $(date) ==="
+echo "=== AVATAR-INSTALL-V2 starting $(date) ==="
 
 fail() { echo "AVATAR-INSTALL-FAILED: $1"; exit 1; }
 
@@ -74,7 +74,7 @@ UPIP_NBI -r requirements.txt || fail "requirements"
 UPIP "rembg[cpu]" spconv-cu121 || fail "extras"
 echo "--- prebuilt wheels (torch_scatter / pytorch3d / gsplat)"
 UPIP "https://data.pyg.org/whl/torch-2.3.0%2Bcu121/torch_scatter-2.1.2%2Bpt23cu121-cp310-cp310-linux_x86_64.whl" || fail "torch_scatter"
-UPIP "https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt230/pytorch3d-0.7.6-cp310-cp310-linux_x86_64.whl" || fail "pytorch3d"
+UPIP --index-url https://pypi.org/simple fvcore iopath "https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt230/pytorch3d-0.7.6-cp310-cp310-linux_x86_64.whl" || fail "pytorch3d"
 UPIP "https://github.com/nerfstudio-project/gsplat/releases/download/v1.4.0/gsplat-1.4.0%2Bpt23cu121-cp310-cp310-linux_x86_64.whl" || echo "WARN gsplat wheel failed (optional renderer dep)"
 
 echo "--- compiled extensions"
