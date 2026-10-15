@@ -22,6 +22,26 @@ VAE=/workspace/ComfyUI/models/vae/wan_2.1_vae.safetensors
 CLIP=/workspace/trainer_models/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
 T5=/workspace/ComfyUI/models/text_encoders/umt5-xxl-enc-bf16.safetensors
 
+echo "== PREP EXTRAS (David's extra reference photos, if present)"
+# Uploaded overnight to ComfyUI input/lora_extra/sample1NN.*; their
+# edits + masks were generated into output/lora_edits|lora_masks with
+# matching sample ids, so after prepare-image scaffolds them here,
+# the generic ASSEMBLE loop below picks them up like the originals.
+EX_IN=/workspace/ComfyUI/input/lora_extra
+if [ -d "$EX_IN" ] && ls "$EX_IN"/* > /dev/null 2>&1; then
+  mkdir -p /workspace/lora_extra_raw
+  for f in "$EX_IN"/*; do
+    b=$(basename "$f")
+    cp "$f" "/workspace/lora_extra_raw/$b"
+    echo "skswoman, a woman in a white bikini, photorealistic" \
+      > "/workspace/lora_extra_raw/${b%.*}.txt"
+  done
+  $PY -m musubi_tuner.scail2_prepare_dataset prepare-image \
+    --input_dir /workspace/lora_extra_raw --output_dir "$DS" \
+    --mode replace
+  echo "EXTRAS PREPARED"
+fi
+
 echo "== ASSEMBLE edits + masks into the dataset tree"
 placed=0; skipped=""
 for d in "$DS"/samples/*/; do
