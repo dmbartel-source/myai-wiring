@@ -57,13 +57,19 @@ $PY -m musubi_tuner.scail2_cache_latents \
   --vae "$VAE" --clip "$CLIP" --t5 "$T5"
 
 echo "== SMOKE 3/3 one training step"
+# SMOKE-TRAIN-FP16: the SCAIL-2 DiT checkpoint is fp16, and the
+# trainer asserts mixed precision must be fp16 (or no) for fp16
+# weights -- bf16 aborts the run (proven Oct 15). Flip the global
+# accelerate config too so the real training run inherits fp16.
+sed -i 's/^mixed_precision:.*/mixed_precision: fp16/' \
+  ~/.cache/huggingface/accelerate/default_config.yaml
 cd $TUNER
 .venv/bin/accelerate launch --num_cpu_threads_per_process 1 \
-  --mixed_precision bf16 \
+  --mixed_precision fp16 \
   src/musubi_tuner/scail2_train_network.py \
   --cache_directory /workspace/lora_dummy_cache \
   --dit "$DIT" \
-  --sdpa --mixed_precision bf16 --fp8_base \
+  --sdpa --mixed_precision fp16 --fp8_base \
   --optimizer_type adamw8bit --learning_rate 2e-4 \
   --gradient_checkpointing \
   --max_data_loader_n_workers 2 --persistent_data_loader_workers \
