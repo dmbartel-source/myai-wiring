@@ -2095,7 +2095,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                   "fps", "denoise", "negative_prompt", "reference_strength",
                   "mask_prompt", "mask_expand", "face_lock", "protect_contact",
                   "mask_threshold", "contact_reach", "contact_pad",
-                  "partner_threshold", "engine")
+                  "partner_threshold", "engine", "ref_threshold",
+                  "composite_expand", "composite_feather")
                  if k in raw}
         media = body.get("media") or ""
         params = {"prompt": prompt, **knobs}
