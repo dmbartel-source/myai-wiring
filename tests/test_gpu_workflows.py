@@ -288,7 +288,16 @@ def test_video_replace_model_scail_graph():
     # source before the composite consumes them.
     assert wf["35"]["class_type"] == "ColorMatch"
     assert wf["35"]["inputs"]["image_target"] == ["24", 0]
-    assert wf["28"]["inputs"]["source"] == ["35", 0]
+    # Zoned finish (default): source is the destination, only her
+    # zone (tracked-her minus the both-masks contact patch) is
+    # generated; the union composite node is not built.
+    assert "28" not in wf
+    assert wf["49"]["inputs"]["destination"] == ["2", 0]
+    assert wf["49"]["inputs"]["source"] == ["35", 0]
+    assert wf["44"]["inputs"]["operation"] == "and"
+    assert wf["47"]["inputs"]["operation"] == "subtract"
+    assert wf["47"]["inputs"]["destination"] == ["46", 0]
+    assert wf["47"]["inputs"]["source"] == ["45", 0]
     # SAM3 conditioning must come from the SAM3 checkpoint's own CLIP
     # output (node 12, slot 1) -- feeding it UMT5 (node 8) crashes the
     # track with a matmul shape error (pod-verified Oct 15).
@@ -304,16 +313,24 @@ def test_video_replace_model_scail_graph():
     assert wf["7"]["inputs"]["shift"] == 8.0
     assert wf["23"]["inputs"]["cfg"] == 1.0
     assert wf["22"]["inputs"]["steps"] == 6
-    # composite default: output pastes generated her over source frames
-    assert wf["29"]["inputs"]["images"] == ["28", 0]
-    assert wf["28"]["inputs"]["destination"] == ["2", 0]
+    # zoned composite default: output pastes generated her over
+    # source frames inside her zone only
+    assert wf["29"]["inputs"]["images"] == ["49", 0]
+    assert wf["49"]["inputs"]["destination"] == ["2", 0]
     # anti-interference tuning (David's first SCAIL-2 run, Oct 15):
-    # stricter reference detection keeps reference-background colours
-    # out of the identity mask; wider grow + tighter feather hides
-    # the composite seam.
+    # stricter reference detection keeps reference-background
+    # colours out of the identity mask.
     assert wf["16"]["inputs"]["threshold"] == 0.5
-    assert wf["26"]["inputs"]["expand"] == 12
-    assert wf["27"]["inputs"]["left"] == 5
+    assert wf["46"]["inputs"]["expand"] == 12
+    assert wf["48"]["inputs"]["left"] == 5
+
+
+def test_video_replace_model_scail_union_mode():
+    wf = gw.video_replace_model_scail("v.mp4", "r.jpg", zoned=False)
+    assert_links_valid(wf)
+    assert "49" not in wf
+    assert wf["28"]["inputs"]["destination"] == ["2", 0]
+    assert wf["29"]["inputs"]["images"] == ["28", 0]
 
 
 def test_video_replace_model_scail_no_composite():
