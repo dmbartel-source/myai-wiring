@@ -4,7 +4,8 @@ Default-deny. Every HTTP(S) request made by tools/ must pass through
 gated_urlopen() (or call check_url() first). The gate:
 
   - allows only an explicit domain allowlist (fal.ai platform hosts,
-    fal artifact CDN, openrouter.ai) plus loopback http for the
+    fal artifact CDN, openrouter.ai, and the proxy host of David's own
+    RunPod GPU pod) plus loopback http for the
     self-hosted local generative endpoint;
   - blocks everything else by raising EgressBlocked;
   - logs EVERY attempt — allowed and blocked — as JSONL, with query
@@ -45,6 +46,9 @@ ALLOWED_SUFFIXES = (
     "fal.media",       # fal artifact CDN (v3.fal.media result URLs)
     "cdn.fal.ai",      # fal CDN edge
     "openrouter.ai",   # model brain API (nanobot presets)
+    "proxy.runpod.net",  # David's own RunPod GPU pod (ComfyUI) — the
+                         # self-hosted endpoint for tools/gpu_client.py;
+                         # media goes to his pod and nowhere else
 )
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
