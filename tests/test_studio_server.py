@@ -573,3 +573,12 @@ def test_even_bounds_no_runt_tail():
     b = ss._even_bounds(15.5, 14.0)
     assert len(b) == 2 and all(length >= 2.0 for _, length in b)
     assert ss._even_bounds(10.0, 14.0) == [(0.0, 10.0)]
+
+
+def test_largest_face_crop_box():
+    box = ss._largest_face_crop_box(1000, 800, [(100, 100, 50, 50),
+                                                (300, 200, 200, 200)])
+    assert box == (210, 110, 590, 490)  # largest face + 45% margin
+    assert ss._largest_face_crop_box(100, 100, [(0, 0, 40, 40)]) == \
+        (0, 0, 58, 58)  # clamped to the image
+    assert ss._largest_face_crop_box(100, 100, []) is None
