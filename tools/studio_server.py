@@ -915,12 +915,32 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                 tw = 704 if sw <= 1408 else (sw // 32) * 32
                 sk["width"] = tw
                 sk["height"] = max(32, (round(sh * tw / sw) // 32) * 32)
+            # Sampling profile (research sweep, Oct 15): the
+            # distilled 6-step / cfg-1 path matches neither official
+            # SCAIL-2 recipe and distilled sampling is reported to
+            # collapse multi-identity binding. The measured
+            # identity-holding compromise is 24 steps / cfg 5 /
+            # shift 3 with the LightX2V distill LoRA OFF.
             if "steps" not in p:
-                sk["steps"] = 6
+                sk["steps"] = 24
             if "cfg" not in p:
-                sk["cfg"] = 1.0
+                sk["cfg"] = 5.0
+            if "shift" not in p:
+                sk["shift"] = 3.0
+            if "lightx2v_strength" not in p:
+                sk["lightx2v_strength"] = 0.0
+            # The prompt must describe the post-replacement scene
+            # with BOTH people and their interaction (official
+            # SCAIL-2 prompt semantics); the shared default only
+            # describes her.
+            scail_prompt = (p.get("prompt") or "").strip() or (
+                "the woman from the reference image together with "
+                "the man from the source video, in close physical "
+                "contact, both fully visible throughout, "
+                "photorealistic, natural skin texture, consistent "
+                "lighting")
             wf = gw.video_replace_model_scail(
-                vup, iup, prompt,
+                vup, iup, scail_prompt,
                 mask_prompt=(p.get("mask_prompt") or "person"),
                 mask_threshold=_f("mask_threshold", 0.4), **sk)
         else:
