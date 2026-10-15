@@ -274,7 +274,16 @@ def test_video_replace_model_scail_graph():
     assert wf["17"]["inputs"]["replacement_mode"] is True
     assert wf["20"]["inputs"]["pose_video_mask"] == ["17", 0]
     assert wf["20"]["inputs"]["reference_image_mask"] == ["17", 1]
-    assert wf["14"]["inputs"]["max_objects"] == 1
+    assert wf["14"]["inputs"]["max_objects"] == 4
+    # v2 two-identity + hero reference: the reference fed to SCAIL
+    # and CLIP Vision is the hero frame (node 34), the reference
+    # detection runs on it too, and the driving track sees everyone.
+    assert wf["16"]["inputs"]["image"] == ["34", 0]
+    assert wf["19"]["inputs"]["image"] == ["34", 0]
+    assert wf["20"]["inputs"]["reference_image"] == ["34", 0]
+    assert wf["34"]["class_type"] == "ImageCompositeMasked"
+    assert wf["34"]["inputs"]["destination"] == ["30", 0]
+    assert wf["33"]["inputs"]["image"] == ["30", 0]
     # SAM3 conditioning must come from the SAM3 checkpoint's own CLIP
     # output (node 12, slot 1) -- feeding it UMT5 (node 8) crashes the
     # track with a matmul shape error (pod-verified Oct 15).
