@@ -238,11 +238,10 @@ def _probe(path: str) -> dict:
 _SIG_SIZE = 32  # signature frames are _SIG_SIZE x _SIG_SIZE gray bytes
 
 
-def _gray_signature(video_path: str, which: str) -> Optional[bytes]:
-    """32x32 grayscale signature of the first or last frame, or None."""
+def _signature_from_seek(video_path: str, seek: list) -> Optional[bytes]:
+    """32x32 grayscale signature of the frame at a seek position."""
     if not _have("ffmpeg"):
         return None
-    seek = ["-ss", "0"] if which == "first" else ["-sseof", "-0.25"]
     cmd = (["ffmpeg", "-v", "error"] + seek + ["-i", video_path,
            "-frames:v", "1", "-vf", f"scale={_SIG_SIZE}:{_SIG_SIZE}",
            "-f", "rawvideo", "-pix_fmt", "gray", "-"])
@@ -254,6 +253,38 @@ def _gray_signature(video_path: str, which: str) -> Optional[bytes]:
     if len(data) < _SIG_SIZE * _SIG_SIZE:
         return None
     return data[:_SIG_SIZE * _SIG_SIZE]
+
+
+def _gray_signature(video_path: str, which: str) -> Optional[bytes]:
+    """32x32 grayscale signature of the first or last frame, or None."""
+    seek = ["-ss", "0"] if which == "first" else ["-sseof", "-0.25"]
+    return _signature_from_seek(video_path, seek)
+
+
+def _probe_duration_s(video_path: str) -> Optional[float]:
+    """Clip duration in seconds via ffprobe, or None."""
+    if not _have("ffprobe"):
+        return None
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+           "-of", "csv=p=0", video_path]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        return float((out.stdout or "").strip())
+    except Exception:
+        return None
+
+
+def _gray_signature_at(video_path: str, frac: float) -> Optional[bytes]:
+    """32x32 grayscale signature of the frame at fraction frac (0..1)."""
+    if frac <= 0.0:
+        return _gray_signature(video_path, "first")
+    if frac >= 1.0:
+        return _gray_signature(video_path, "last")
+    dur = _probe_duration_s(video_path)
+    if not dur or dur <= 0:
+        return None
+    t = min(max(dur * frac, 0.0), max(dur - 0.05, 0.0))
+    return _signature_from_seek(video_path, ["-ss", f"{t:.3f}"])
 
 
 def _signature_diff(a: Optional[bytes], b: Optional[bytes]) -> Optional[float]:
@@ -271,6 +302,11 @@ def _signature_diff(a: Optional[bytes], b: Optional[bytes]) -> Optional[float]:
 # Deliberately conservative: a false rejection costs a paid re-render.
 QC_MIN_MOTION = 1.5
 QC_MIN_ADVANCE = 2.5
+# Two frames this close (mean abs diff, 0..255) are effectively the same
+# frame. At NON-adjacent points of a clip that means the generator
+# looped back to an earlier composition mid-clip — a failure the
+# first-vs-last check cannot see when the clip still ends somewhere new.
+QC_LOOP_DIFF = 0.8
 
 
 def _clip_qc(video_path: str, prev_last_sig: Optional[bytes]) -> tuple:
@@ -284,6 +320,19 @@ def _clip_qc(video_path: str, prev_last_sig: Optional[bytes]) -> tuple:
     motion = _signature_diff(first_sig, last_sig)
     if motion is not None and motion < QC_MIN_MOTION:
         return False, "static/looping clip (no visible motion)", last_sig
+    # Internal-loop check: sample the interior and look for a near-exact
+    # repeat of a frame from a distant earlier point. Adjacent samples
+    # are exempt — a brief hold is legitimate; a distant repeat is a loop.
+    samples = [first_sig,
+               _gray_signature_at(video_path, 0.25),
+               _gray_signature_at(video_path, 0.5),
+               _gray_signature_at(video_path, 0.75),
+               last_sig]
+    for a in range(len(samples)):
+        for b in range(a + 2, len(samples)):
+            d = _signature_diff(samples[a], samples[b])
+            if d is not None and d < QC_LOOP_DIFF:
+                return False, "clip loops back on itself mid-clip", last_sig
     advance = _signature_diff(prev_last_sig, last_sig)
     if advance is not None and advance < QC_MIN_ADVANCE:
         return False, "clip ends where the previous clip ended", last_sig
@@ -399,6 +448,7 @@ def run_chain(
     crf: int = 20,
     preset: str = "medium",
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
+    clip_lock_fn: Optional[Callable[[str], None]] = None,
 ) -> str:
     """Generate N chained clips and stitch them. Returns final MP4 path.
 
@@ -408,6 +458,11 @@ def run_chain(
     download_clip(url, dest) -> local path.
     extract_frame_fn(video, jpg) -> jpg path (exact last frame).
     file_to_url_fn(path) -> data: URL.
+    clip_lock_fn(path) -> None: optional in-place transform applied to
+      each accepted clip BEFORE it seeds the next clip (the Studio passes
+      a face lock, so last-frame conditioning starts from the reference's
+      real face instead of the generator's drifted one). A lock failure
+      is reported via progress_cb and never kills the chain.
 
     Prompts pass through exactly as written — no filtering.
     """
@@ -422,12 +477,27 @@ def run_chain(
         if progress_cb:
             progress_cb(i, n, phase)
 
+    def _apply_clip_lock(path: str, i: int):
+        """Run the caller's per-clip lock in place, best-effort.
+
+        The clip is already paid for, so a lock failure is surfaced as
+        a progress warning only — never a chain failure.
+        """
+        if clip_lock_fn is None:
+            return
+        try:
+            clip_lock_fn(path)
+        except Exception as e:
+            progress(i, f"clip {i + 1}/{n}: per-clip lock failed "
+                        f"({e}) — continuing unlocked")
+
     clips: list[str] = []
     prev_last_sig: Optional[bytes] = None
     for i, beat in enumerate(beats):
         dest = os.path.join(workdir, f"clip_{i:02d}.mp4")
         # Checkpoint/resume: skip clips already completed in a prior run.
         if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+            _apply_clip_lock(dest, i)
             clips.append(dest)
             # Keep the advance-check baseline current for the next clip.
             prev_last_sig = _gray_signature(dest, "last")
@@ -507,6 +577,11 @@ def run_chain(
         if last_err is not None:
             raise RuntimeError(
                 f"clip {i + 1}/{n} failed after 3 attempts: {last_err}") from last_err
+        _apply_clip_lock(dest, i)
+        if clip_lock_fn is not None:
+            # The lock changed the clip's frames; keep the advance
+            # baseline describing the file the next clip builds on.
+            prev_last_sig = _gray_signature(dest, "last") or prev_last_sig
         clips.append(dest)
         progress(i, f"clip {i + 1}/{n} done")
 
