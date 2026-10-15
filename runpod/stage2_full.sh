@@ -33,7 +33,7 @@ if [ -d "$EX_IN" ] && ls "$EX_IN"/* > /dev/null 2>&1; then
   for f in "$EX_IN"/*; do
     b=$(basename "$f")
     cp "$f" "/workspace/lora_extra_raw/$b"
-    echo "skswoman, a woman in a white bikini, photorealistic" \
+    echo "skswoman, a woman, photorealistic" \
       > "/workspace/lora_extra_raw/${b%.*}.txt"
   done
   $PY -m musubi_tuner.scail2_prepare_dataset prepare-image \
