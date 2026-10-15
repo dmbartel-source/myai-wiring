@@ -1216,7 +1216,7 @@ function mrCost(){
   }else if(mrMode==="animate"){
     c.innerHTML = "Full-Body Replace (Wan Animate, ~$0.40 per 5s of video): your model takes over the whole performance — same scene, same poses, same motion. Works on videos of any length. The original audio is kept." + refNote;
   }else{
-    c.innerHTML = "AI Replace (~$3.00/clip): generative — the AI re-creates the model from your reference. It reinterprets rather than copies.";
+    c.innerHTML = "AI Replace (Seedance, ~$0.30 per second of video): generative — the AI re-creates the model from your reference. It reinterprets rather than copies. Works on videos of any length: longer videos are edited in parts and stitched back together with your original audio." + (mrRef && mrRef.type==="video" ? " A still frame from your reference video will be used as the model image." : "");
   }
 }
 $("#mr-back").addEventListener("click", ()=>{
