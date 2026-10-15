@@ -48,7 +48,7 @@ def test_models_match_models_txt():
             repo, path_in_repo, subdir = parts
             assert subdir in ("diffusion_models", "text_encoders", "vae",
                               "loras", "checkpoints", "clip_vision",
-                              "controlnet", "upscale_models")
+                              "controlnet", "upscale_models", "SEEDVR2")
             basenames.add(os.path.basename(path_in_repo))
     assert basenames == set(gw.MODELS.values())
 
@@ -364,3 +364,30 @@ def test_video_replace_model_scail_no_composite():
     assert "28" not in wf
     # No composite -- but the colour finish still applies.
     assert wf["29"]["inputs"]["images"] == ["35", 0]
+
+
+def test_video_replace_model_scail_seedvr2_finish():
+    plain = gw.video_replace_model_scail("v.mp4", "r.jpg", zoned=False)
+    assert "62" not in plain
+    wf = gw.video_replace_model_scail("v.mp4", "r.jpg", zoned=False,
+                                      seedvr2_resolution=1024)
+    assert_links_valid(wf)
+    assert wf["60"]["class_type"] == "SeedVR2LoadDiTModel"
+    assert wf["60"]["inputs"]["model"] == gw.MODELS["seedvr2_dit"]
+    assert wf["61"]["class_type"] == "SeedVR2LoadVAEModel"
+    assert wf["61"]["inputs"]["model"] == gw.MODELS["seedvr2_vae"]
+    assert wf["62"]["class_type"] == "SeedVR2VideoUpscaler"
+    # The pass runs over the finished (union-composited) frames.
+    assert wf["62"]["inputs"]["image"] == ["28", 0]
+    assert wf["62"]["inputs"]["resolution"] == 1024
+    assert wf["29"]["inputs"]["images"] == ["62", 0]
+
+
+def test_video_seedvr2_upscale_graph():
+    wf = gw.video_seedvr2_upscale("v.mp4", resolution=720, fps=24.0)
+    assert_links_valid(wf)
+    assert wf["4"]["class_type"] == "SeedVR2VideoUpscaler"
+    assert wf["4"]["inputs"]["image"] == ["1", 0]
+    assert wf["4"]["inputs"]["resolution"] == 720
+    assert wf["5"]["inputs"]["images"] == ["4", 0]
+    assert wf["5"]["inputs"]["frame_rate"] == 24.0
