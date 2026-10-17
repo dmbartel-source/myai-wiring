@@ -1,5 +1,5 @@
 #!/bin/bash
-# STAGE2-V2-V5
+# STAGE2-V2-V6
 # MYAI person-LoRA v2, CORRECTED stage 2. The Oct 15 run died in its
 # first minute: 'python -m musubi_tuner...' -> ModuleNotFoundError on
 # the API-deployed raw-image pod (the module was importable on the old
@@ -15,7 +15,7 @@
 # Run ON THE POD, detached:
 #   (setsid bash stage2_v2.sh < /dev/null > /workspace/lora_stage2_v2.log 2>&1 &)
 set -u
-echo "STAGE2-V2-V5 starting $(date -u)"
+echo "STAGE2-V2-V6 starting $(date -u)"
 export HF_HUB_ENABLE_HF_TRANSFER=0
 cd /workspace
 TUNER=/workspace/SCAIL-2-Tuner
@@ -99,8 +99,12 @@ fi
 echo "-- disk"
 FREE_GB=$(df -BG /workspace | tail -1 | awk '{print $4}' | tr -d 'G')
 echo "volume free: ${FREE_GB}G"
-if [ "$FREE_GB" -lt 30 ]; then
-  echo "PREFLIGHT-FAIL: less than 30G free on the volume"
+# Disk floor set from the build's measured footprint (Oct 17): latent
+# cache <1G + 5 checkpoints ~2.7G + logs. 10G floor = >2.5x headroom.
+# (The original 30G floor was set before measuring and blocked a
+# healthy 24G-free volume.)
+if [ "$FREE_GB" -lt 10 ]; then
+  echo "PREFLIGHT-FAIL: less than 10G free on the volume"
   exit 1
 fi
 echo "-- imports (the exact modules the build runs)"
