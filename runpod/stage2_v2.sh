@@ -1,18 +1,25 @@
 #!/bin/bash
-# STAGE2-V2-V1
-# MYAI person-LoRA v2: scaffold the dataset from the 41 real targets
-# in ComfyUI/input/lora_targets_v2, wait for Noor's API-submitted
-# Qwen edits + SAM3 masks to land in ComfyUI/output, then assemble,
-# finalize, cache latents, train (output_name skswoman_v2) and
-# install into ComfyUI/models/loras/skswoman_v2.safetensors.
-# v1's skswoman.safetensors is NOT touched.
+# STAGE2-V2-V2
+# MYAI person-LoRA v2, CORRECTED stage 2. The Oct 15 run died in its
+# first minute: 'python -m musubi_tuner...' -> ModuleNotFoundError on
+# the API-deployed raw-image pod (the module was importable on the old
+# console-template pod where v1 ran). Fixes in this version:
+#   - PYTHONPATH points at the tuner src explicitly for every call
+#   - an import self-check runs first and aborts loudly if it fails
+#   - the scaffold VERIFIES the sample dirs exist before waiting
+#   - the assemble loop skips the unexpanded-glob phantom entry
+# The 82 edit/mask outputs from Oct 15 already sit in ComfyUI/output,
+# so the wait below completes immediately. Then: assemble, finalize,
+# cache latents, train (output_name skswoman_v2), install into
+# ComfyUI/models/loras/skswoman_v2.safetensors. v1 is NOT touched.
 # Run ON THE POD, detached:
-#   cd /workspace && (setsid bash stage2_v2.sh < /dev/null > /workspace/lora_stage2_v2.log 2>&1 &)
+#   (setsid bash stage2_v2.sh < /dev/null > /workspace/lora_stage2_v2.log 2>&1 &)
 set -u
-echo "STAGE2-V2-V1 starting $(date -u)"
+echo "STAGE2-V2-V2 starting $(date -u)"
 export HF_HUB_ENABLE_HF_TRANSFER=0
 cd /workspace
 TUNER=/workspace/SCAIL-2-Tuner
+export PYTHONPATH="$TUNER/src${PYTHONPATH:+:$PYTHONPATH}"
 PY=$TUNER/.venv/bin/python
 DS=/workspace/lora_dataset_v2
 RAW=/workspace/lora_raw_v2
@@ -21,6 +28,14 @@ DIT=/workspace/ComfyUI/models/diffusion_models/wan2.1_14B_SCAIL_2_fp16.safetenso
 VAE=/workspace/ComfyUI/models/vae/wan_2.1_vae.safetensors
 CLIP=/workspace/trainer_models/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
 T5=/workspace/ComfyUI/models/text_encoders/umt5-xxl-enc-bf16.safetensors
+
+echo "== IMPORT SELF-CHECK"
+if $PY -c "import musubi_tuner.scail2_prepare_dataset; print('IMPORT-OK')"; then
+  echo "import path OK"
+else
+  echo "IMPORT-FAILED - aborting before any work"
+  exit 1
+fi
 
 echo "== SCAFFOLD v2 dataset (frames first, then stills)"
 rm -rf "$RAW" "$DS" /workspace/lora_cache_v2 /workspace/lora_out_v2
@@ -36,13 +51,19 @@ for f in "${FILES[@]}"; do
 done
 $PY -m musubi_tuner.scail2_prepare_dataset prepare-image \
   --input_dir "$RAW" --output_dir "$DS" --mode replace
-echo "SCAFFOLD-DONE samples: $(ls $DS/samples | wc -l)"
+NSAMP=$(ls "$DS/samples" 2>/dev/null | wc -l)
+echo "SCAFFOLD-DONE samples: $NSAMP"
+if [ "$NSAMP" -lt 40 ]; then
+  echo "SCAFFOLD-FAILED: only $NSAMP sample dirs - aborting"
+  exit 1
+fi
 
 echo "== WAIT for edits + masks (41 samples x R/Z + 2 masks)"
 DEADLINE=$(( $(date +%s) + 14400 ))
 while : ; do
   complete=0
   for d in "$DS"/samples/*/; do
+    [ -d "$d" ] || continue
     id=$(basename "$d")
     r=$(ls "$OUT"/lora_edits/${id}_R_*.png 2>/dev/null | head -1)
     z=$(ls "$OUT"/lora_edits/${id}_Z_*.png 2>/dev/null | head -1)
@@ -59,6 +80,7 @@ done
 echo "== ASSEMBLE edits + masks into the dataset tree"
 placed=0; skipped=""
 for d in "$DS"/samples/*/; do
+  [ -d "$d" ] || continue
   id=$(basename "$d")
   r=$(ls "$OUT"/lora_edits/${id}_R_*.png 2>/dev/null | sort | tail -1)
   z=$(ls "$OUT"/lora_edits/${id}_Z_*.png 2>/dev/null | sort | tail -1)
