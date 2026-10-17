@@ -1,5 +1,5 @@
 #!/bin/bash
-# STAGE2-V2-V3
+# STAGE2-V2-V5
 # MYAI person-LoRA v2, CORRECTED stage 2. The Oct 15 run died in its
 # first minute: 'python -m musubi_tuner...' -> ModuleNotFoundError on
 # the API-deployed raw-image pod (the module was importable on the old
@@ -15,7 +15,7 @@
 # Run ON THE POD, detached:
 #   (setsid bash stage2_v2.sh < /dev/null > /workspace/lora_stage2_v2.log 2>&1 &)
 set -u
-echo "STAGE2-V2-V3 starting $(date -u)"
+echo "STAGE2-V2-V5 starting $(date -u)"
 export HF_HUB_ENABLE_HF_TRANSFER=0
 cd /workspace
 TUNER=/workspace/SCAIL-2-Tuner
@@ -29,24 +29,96 @@ VAE=/workspace/ComfyUI/models/vae/wan_2.1_vae.safetensors
 CLIP=/workspace/trainer_models/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
 T5=/workspace/ComfyUI/models/text_encoders/umt5-xxl-enc-bf16.safetensors
 
-echo "== VENV REPAIR (make the tuner venv self-contained on this pod image)"
-# The venv was built on the old console-template pod, whose environment
-# leaked packages (musubi_tuner path, PyAV 'av', ...) into imports.
-# On this raw image those leaks are gone, so install the tuner's
-# declared deps + av INTO the venv itself before doing anything.
-cd "$TUNER"
-.venv/bin/python -m pip install -q -e . av tensorboard matplotlib ascii-magic
-cd /workspace
-echo "venv repair done"
+# ---- EXTREME LOGGING (David's instruction, Oct 17) -----------------
+# Full command trace from here on; a mirror of this log is copied into
+# ComfyUI/output every 60s so Noor can read the build's own record
+# remotely instead of inferring state from indirect signals.
+set -x
+( while :; do cp -f /workspace/lora_stage2_v2.log /workspace/ComfyUI/output/stage2_v2_log_copy.txt 2>/dev/null; sleep 60; done ) &
+MIRROR_PID=$!
+trap 'kill $MIRROR_PID 2>/dev/null' EXIT
+echo "== ENV DUMP"
+date -u
+hostname
+python3 --version
+$PY --version
+nvidia-smi || true
+df -h /workspace
+echo "tuner: $TUNER"
+echo "dataset: $DS  cache: /workspace/lora_cache_v2  out: /workspace/lora_out_v2"
 
-echo "== IMPORT SELF-CHECK"
-if $PY -c "import av; import musubi_tuner.scail2_prepare_dataset; import musubi_tuner.scail2_cache_latents; print('IMPORT-OK')"; then
-  echo "import path OK"
-else
-  echo "IMPORT-FAILED - aborting before any work"
+echo "== PREFLIGHT: rebuild the tuner venv whole, prove every precondition"
+# The Oct 15 venv was built on the console-template pod and silently
+# relied on that environment (importable musubi_tuner, PyAV, even pip
+# itself). This preflight makes the venv self-contained on THIS image
+# and verifies every file, count and import the build touches BEFORE
+# the build starts. Any failure aborts loudly in the first minutes.
+$PY -m ensurepip --upgrade > /dev/null 2>&1 || true
+if ! $PY -m pip --version > /dev/null 2>&1; then
+  echo "PREFLIGHT-FAIL: venv has no pip even after ensurepip"
   exit 1
 fi
+cd "$TUNER"
+$PY -m pip install -e . av tensorboard matplotlib ascii-magic
+cd /workspace
+mkdir -p ~/.cache/huggingface/accelerate
+cat > ~/.cache/huggingface/accelerate/default_config.yaml << 'YAML'
+compute_environment: LOCAL_MACHINE
+debug: false
+distributed_type: 'NO'
+downcast_bf16: 'no'
+enable_cpu_affinity: false
+gpu_ids: all
+machine_rank: 0
+main_training_function: main
+mixed_precision: fp16
+num_machines: 1
+num_processes: 1
+rdzv_backend: static
+same_network: true
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false
+YAML
+echo "-- venv package inventory (pip freeze)"
+$PY -m pip freeze
+echo "-- model files"
+for f in "$DIT" "$VAE" "$CLIP" "$T5"; do
+  if [ -f "$f" ]; then echo "ok: $f ($(stat -c%s "$f") bytes)"; else echo "PREFLIGHT-FAIL: missing $f"; exit 1; fi
+done
+echo "-- data counts"
+NT=$(ls /workspace/ComfyUI/input/lora_targets_v2 2>/dev/null | wc -l)
+NE=$(ls "$OUT"/lora_edits/*.png 2>/dev/null | wc -l)
+NM=$(ls "$OUT"/lora_masks/*.png 2>/dev/null | wc -l)
+echo "targets=$NT edits=$NE masks=$NM (expect 41 / 82 / 82)"
+if [ "$NT" -lt 41 ] || [ "$NE" -lt 82 ] || [ "$NM" -lt 82 ]; then
+  echo "PREFLIGHT-FAIL: input data incomplete"
+  exit 1
+fi
+echo "-- disk"
+FREE_GB=$(df -BG /workspace | tail -1 | awk '{print $4}' | tr -d 'G')
+echo "volume free: ${FREE_GB}G"
+if [ "$FREE_GB" -lt 30 ]; then
+  echo "PREFLIGHT-FAIL: less than 30G free on the volume"
+  exit 1
+fi
+echo "-- imports (the exact modules the build runs)"
+if $PY -c "import av, torch; import musubi_tuner.scail2_prepare_dataset; import musubi_tuner.scail2_cache_latents; print('IMPORT-OK torch', torch.__version__)"; then
+  echo "import path OK"
+else
+  echo "PREFLIGHT-FAIL: imports still broken after venv rebuild"
+  exit 1
+fi
+if [ -x "$TUNER/.venv/bin/accelerate" ]; then
+  echo "accelerate present: $($TUNER/.venv/bin/accelerate --version | head -1)"
+else
+  echo "PREFLIGHT-FAIL: no accelerate in the tuner venv"
+  exit 1
+fi
+echo "PREFLIGHT-OK - every precondition verified"
 
+echo "STAGE-BEGIN SCAFFOLD v2 dataset at $(date -u +%s) $(date -u)"
 echo "== SCAFFOLD v2 dataset (frames first, then stills)"
 rm -rf "$RAW" "$DS" /workspace/lora_cache_v2 /workspace/lora_out_v2
 mkdir -p "$RAW"
@@ -124,6 +196,7 @@ H = int(round(h * (W / w) / 32.0)) * 32
 print(f'{W},{H}')")
 echo "cache resolution: $RES"
 
+echo "STAGE-BEGIN CACHE LATENTS at $(date -u +%s) $(date -u)"
 echo "== CACHE LATENTS"
 $PY -m musubi_tuner.scail2_cache_latents \
   --manifest "$DS/manifests/scail2_cache_manifest.jsonl" \
@@ -132,6 +205,7 @@ $PY -m musubi_tuner.scail2_cache_latents \
   --vae "$VAE" --clip "$CLIP" --t5 "$T5"
 echo "CACHE-DONE"
 
+echo "STAGE-BEGIN TRAIN (fp16 at $(date -u +%s) $(date -u)"
 echo "== TRAIN (fp16, dim 32, 16 epochs, output skswoman_v2)"
 cd "$TUNER"
 .venv/bin/accelerate launch --num_cpu_threads_per_process 1 \
@@ -163,4 +237,12 @@ else
   echo "LORA INSTALL FAILED: no checkpoint in /workspace/lora_out_v2"
   exit 1
 fi
+echo "== FINAL INVENTORY"
+ls -la /workspace/lora_out_v2/
+echo "-- installed LoRA"
+ls -la /workspace/ComfyUI/models/loras/
+sha256sum /workspace/ComfyUI/models/loras/skswoman_v2.safetensors || true
+echo "-- training loss tail (from the trainer's own log lines above)"
+grep -a "avr_loss" /workspace/lora_stage2_v2.log | tail -5 || true
+echo "BUILD-FINISHED at $(date -u)"
 echo "STAGE2-V2-DONE"
