@@ -1,5 +1,5 @@
 #!/bin/bash
-# STAGE2-V2-V2
+# STAGE2-V2-V3
 # MYAI person-LoRA v2, CORRECTED stage 2. The Oct 15 run died in its
 # first minute: 'python -m musubi_tuner...' -> ModuleNotFoundError on
 # the API-deployed raw-image pod (the module was importable on the old
@@ -15,7 +15,7 @@
 # Run ON THE POD, detached:
 #   (setsid bash stage2_v2.sh < /dev/null > /workspace/lora_stage2_v2.log 2>&1 &)
 set -u
-echo "STAGE2-V2-V2 starting $(date -u)"
+echo "STAGE2-V2-V3 starting $(date -u)"
 export HF_HUB_ENABLE_HF_TRANSFER=0
 cd /workspace
 TUNER=/workspace/SCAIL-2-Tuner
@@ -29,8 +29,18 @@ VAE=/workspace/ComfyUI/models/vae/wan_2.1_vae.safetensors
 CLIP=/workspace/trainer_models/models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth
 T5=/workspace/ComfyUI/models/text_encoders/umt5-xxl-enc-bf16.safetensors
 
+echo "== VENV REPAIR (make the tuner venv self-contained on this pod image)"
+# The venv was built on the old console-template pod, whose environment
+# leaked packages (musubi_tuner path, PyAV 'av', ...) into imports.
+# On this raw image those leaks are gone, so install the tuner's
+# declared deps + av INTO the venv itself before doing anything.
+cd "$TUNER"
+.venv/bin/python -m pip install -q -e . av tensorboard matplotlib ascii-magic
+cd /workspace
+echo "venv repair done"
+
 echo "== IMPORT SELF-CHECK"
-if $PY -c "import musubi_tuner.scail2_prepare_dataset; print('IMPORT-OK')"; then
+if $PY -c "import av; import musubi_tuner.scail2_prepare_dataset; import musubi_tuner.scail2_cache_latents; print('IMPORT-OK')"; then
   echo "import path OK"
 else
   echo "IMPORT-FAILED - aborting before any work"
