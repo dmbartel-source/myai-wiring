@@ -1,5 +1,5 @@
 #!/bin/bash
-# STAGE2-V2-V6
+# STAGE2-V2-V7
 # MYAI person-LoRA v2, CORRECTED stage 2. The Oct 15 run died in its
 # first minute: 'python -m musubi_tuner...' -> ModuleNotFoundError on
 # the API-deployed raw-image pod (the module was importable on the old
@@ -15,7 +15,7 @@
 # Run ON THE POD, detached:
 #   (setsid bash stage2_v2.sh < /dev/null > /workspace/lora_stage2_v2.log 2>&1 &)
 set -u
-echo "STAGE2-V2-V6 starting $(date -u)"
+echo "STAGE2-V2-V7 starting $(date -u)"
 export HF_HUB_ENABLE_HF_TRANSFER=0
 cd /workspace
 TUNER=/workspace/SCAIL-2-Tuner
@@ -59,7 +59,7 @@ if ! $PY -m pip --version > /dev/null 2>&1; then
   exit 1
 fi
 cd "$TUNER"
-$PY -m pip install -e . av tensorboard matplotlib ascii-magic
+$PY -m pip install -e . av torchvision torchaudio tensorboard matplotlib ascii-magic
 cd /workspace
 mkdir -p ~/.cache/huggingface/accelerate
 cat > ~/.cache/huggingface/accelerate/default_config.yaml << 'YAML'
@@ -108,7 +108,7 @@ if [ "$FREE_GB" -lt 10 ]; then
   exit 1
 fi
 echo "-- imports (the exact modules the build runs)"
-if $PY -c "import av, torch; import musubi_tuner.scail2_prepare_dataset; import musubi_tuner.scail2_cache_latents; print('IMPORT-OK torch', torch.__version__)"; then
+if $PY -c "import av, torch, torchvision; import musubi_tuner.scail2_prepare_dataset; import musubi_tuner.scail2_cache_latents; import musubi_tuner.scail2_train_network; print('IMPORT-OK torch', torch.__version__, 'torchvision', torchvision.__version__)"; then
   echo "import path OK"
 else
   echo "PREFLIGHT-FAIL: imports still broken after venv rebuild"
