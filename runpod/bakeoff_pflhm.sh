@@ -169,6 +169,23 @@ for s in set1 set8 set16; do
   mkdir -p "bake_inputs/$s"
   cp /workspace/ComfyUI/input/bakeoff/$s/*.jpg "bake_inputs/$s/"
   echo "$s: $(ls bake_inputs/$s | wc -l) images"
+  "$PY" - "$PWD/bake_inputs/$s" <<'PYEOF' || fail "images-normalize-$s"
+import sys, glob, os
+from PIL import Image
+d = sys.argv[1]
+files = sorted(glob.glob(os.path.join(d, "*.jpg")))
+imgs = [(f, Image.open(f).convert("RGB")) for f in files]
+W = max(im.width for _, im in imgs)
+H = max(im.height for _, im in imgs)
+for f, im in imgs:
+    if im.size != (W, H):
+        canvas = Image.new("RGB", (W, H), (0, 0, 0))
+        canvas.paste(im, ((W - im.width) // 2, (H - im.height) // 2))
+        canvas.save(f, quality=95)
+sizes = {Image.open(f).size for f in files}
+assert sizes == {(W, H)}, "normalize failed: %s" % (sizes,)
+print("normalized %s: %d images -> %dx%d" % (d, len(files), W, H))
+PYEOF
 done
 stage images
 
