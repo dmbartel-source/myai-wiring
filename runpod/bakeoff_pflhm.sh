@@ -11,6 +11,8 @@ export TORCH_CUDA_ARCH_LIST="9.0"
 REPO=/workspace/LHM-plusplus
 VENV=/workspace/lhmpp-venv
 OUT=/workspace/ComfyUI/output/bakeoff
+mkdir -p "$OUT"
+rm -f "$OUT/BAKEOFF-DONE.txt" "$OUT/BAKEOFF-FAIL.txt"
 LHMPP_SHA=906b5d9fb967ab42efb92f6fa55bf22cac86b653
 mkdir -p "$OUT"
 exec > >(tee -a /workspace/bakeoff.log) 2>&1
@@ -64,20 +66,22 @@ if ! "$VENV/bin/python" -c "import sys; assert sys.version_info[:2] == (3, 10)" 
 fi
 PY="$VENV/bin/python"
 PIP() { uv pip install --python "$PY" "$@"; }
+PIPB() { uv pip install --python "$PY" --no-build-isolation "$@"; }
 export TORCH_CUDA_ARCH_LIST="9.0"
 if ! "$PY" -c "import torch, pytorch3d, pointops, gsplat, spconv, torch_scatter, xformers" 2>/dev/null; then
   PIP torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https://download.pytorch.org/whl/cu121 || fail torch
   PIP -U xformers==0.0.26.post1 --index-url https://download.pytorch.org/whl/cu121 || fail xformers
-  (cd "$REPO" && PIP -r requirements.txt) || fail requirements
+  PIP ninja || fail ninja
+  (cd "$REPO" && PIPB -r requirements.txt) || fail requirements
   PIP "rembg[cpu]" modelscope || fail rembg
   PIP fvcore iopath || fail fvcore
   PIP --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt230/download.html || fail pytorch3d
   PIP spconv-cu121 || fail spconv
   PIP torch_scatter -f https://data.pyg.org/whl/torch-2.3.0+cu121.html || fail torch-scatter
-  PIP git+https://github.com/ashawkey/diff-gaussian-rasterization/ || fail dgr
-  PIP git+https://github.com/camenduru/simple-knn/ || fail simple-knn
-  PIP gsplat==1.4.0 || fail gsplat
-  (cd "$REPO" && PIP ./lib/pointops/) || (cd "$REPO/lib/pointops" && "$PY" setup.py install) || fail pointops
+  PIPB git+https://github.com/ashawkey/diff-gaussian-rasterization/ || fail dgr
+  PIPB git+https://github.com/camenduru/simple-knn/ || fail simple-knn
+  PIPB gsplat==1.4.0 || fail gsplat
+  (cd "$REPO" && PIPB ./lib/pointops/) || (cd "$REPO/lib/pointops" && "$PY" setup.py install) || fail pointops
 fi
 "$PY" -c "import torch, pytorch3d, pointops, gsplat, spconv, torch_scatter, xformers; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))" || fail imports
 echo "BAKE-IMPORTS-OK"
