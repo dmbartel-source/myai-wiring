@@ -909,6 +909,37 @@ def video_replace_model_scail(
     return wf
 
 
+def _add_gap_qc_nodes(wf: dict, frames: int) -> None:
+    """QC outputs for the GAP builder (completion plan step 1, Oct 17):
+    coloured-mask stills + matching source stills at start/mid/end, plus
+    the reference composite and its coloured mask. Binding in SCAIL-2 is
+    positional (palette colour <-> slot), so these stills are the gate:
+    if a colour sits on the wrong person, the run is discarded before
+    anyone judges identity. Mid/end stills are only emitted when the
+    frame count is known (frames > 2)."""
+    picks = [("start", 0)]
+    if frames > 2:
+        picks += [("mid", frames // 2), ("end", frames - 1)]
+    nid = 90
+    for label, idx in picks:
+        for src, tag in ((["17", 0], "mask"), (["2", 0], "src")):
+            wf[str(nid)] = {"class_type": "ImageFromBatch",
+                            "inputs": {"image": src,
+                                       "batch_index": int(idx),
+                                       "length": 1}}
+            wf[str(nid + 1)] = {"class_type": "SaveImage",
+                                "inputs": {"images": [str(nid), 0],
+                                           "filename_prefix":
+                                               f"myai/qc_{tag}_{label}"}}
+            nid += 2
+    wf[str(nid)] = {"class_type": "SaveImage",
+                    "inputs": {"images": ["70", 0],
+                               "filename_prefix": "myai/qc_ref_composite"}}
+    wf[str(nid + 1)] = {"class_type": "SaveImage",
+                        "inputs": {"images": ["70", 1],
+                                   "filename_prefix": "myai/qc_ref_mask"}}
+
+
 def video_replace_model_scail_gap(
     source_video: str,
     reference_image: str,
@@ -937,6 +968,8 @@ def video_replace_model_scail_gap(
     pose_strength: float = 1.0,
     sort_by: str = "left_to_right",
     gap_swap: bool = False,
+    qc_only: bool = False,
+    qc_stills: bool = False,
     zoned: bool = False,
     partner_threshold: float = 0.55,
     contact_reach: int = 24,
@@ -1086,6 +1119,16 @@ def video_replace_model_scail_gap(
     wf["19"] = {"class_type": "CLIPVisionEncode",
                 "inputs": {"clip_vision": ["18", 0],
                            "image": ["70", 2], "crop": "center"}}
+    if qc_only:
+        # QC gate (completion plan step 1): tracking + reference build
+        # only -- no sampling, no finish. Run this first on a pod; if
+        # the coloured-mask stills put a colour on the wrong person,
+        # fix the slots (gap_swap / sort) instead of paying for a
+        # render. Unreferenced model/LoRA nodes are not executed.
+        _add_gap_qc_nodes(wf, frames)
+        return wf
+    if qc_stills:
+        _add_gap_qc_nodes(wf, frames)
     wf["71"] = {"class_type": "GAPSCAIL2LongVideo",
                 "inputs": {
                     "model": ["7", 0], "clip": ["8", 0],
