@@ -25,7 +25,7 @@ echo "=== BAKEOFF-PFLHM-V1 start $(date -u +%FT%TZ) ==="
 nvidia-smi --query-gpu=name --format=csv,noheader || fail preflight-gpu
 FREE_KB=$(df --output=avail -k /workspace | tail -1)
 echo "volume free KB: $FREE_KB"
-[ "$FREE_KB" -ge 16000000 ] || fail preflight-disk
+[ "$FREE_KB" -ge 6000000 ] || fail preflight-disk
 if ! curl -s -m 3 http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then
   # ComfyUI's Python deps live in the pod's ephemeral system python;
   # a fresh pod needs them installed before ComfyUI can start.
@@ -71,7 +71,7 @@ export TORCH_CUDA_ARCH_LIST="9.0"
 if ! "$PY" -c "import torch, pytorch3d, pointops, gsplat, spconv, torch_scatter, xformers" 2>/dev/null; then
   PIP torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https://download.pytorch.org/whl/cu121 || fail torch
   PIP -U xformers==0.0.26.post1 --index-url https://download.pytorch.org/whl/cu121 || fail xformers
-  PIP ninja || fail ninja
+  PIP ninja Cython || fail buildtools
   (cd "$REPO" && PIPB -r requirements.txt) || fail requirements
   PIP "rembg[cpu]" modelscope || fail rembg
   PIP fvcore iopath || fail fvcore
