@@ -968,6 +968,7 @@ def video_replace_model_scail_gap(
     pose_strength: float = 1.0,
     sort_by: str = "left_to_right",
     gap_swap: bool = False,
+    closeup_image: str = "",
     qc_only: bool = False,
     qc_stills: bool = False,
     zoned: bool = False,
@@ -1119,6 +1120,33 @@ def video_replace_model_scail_gap(
     wf["19"] = {"class_type": "CLIPVisionEncode",
                 "inputs": {"clip_vision": ["18", 0],
                            "image": ["70", 2], "crop": "center"}}
+    ref_out, ref_mask_out = ["70", 0], ["70", 1]
+    if closeup_image:
+        # Face close-up second reference (completion plan step 4; the
+        # SCAIL-2 maintainer's prescribed remedy for weak identity, and
+        # the GAP pack's native mechanism): append a SAM3-masked close-up
+        # of her face as an extra view of HER slot -- slot 1 normally,
+        # slot 2 when gap_swap put her second. CLIP vision stays on the
+        # primary composite (node 70 output 2); only the orchestrator's
+        # reference batch grows.
+        wf["65"] = {"class_type": "LoadImage",
+                    "inputs": {"image": closeup_image}}
+        wf["66"] = {"class_type": "CLIPTextEncode",
+                    "inputs": {"text": "face", "clip": ["12", 1]}}
+        wf["67"] = {"class_type": "SAM3_Detect",
+                    "inputs": {"model": ["12", 0], "image": ["65", 0],
+                               "conditioning": ["66", 0],
+                               "threshold": float(ref_threshold),
+                               "refine_iterations": 2,
+                               "individual_masks": False}}
+        wf["68"] = {"class_type": "GAPCharacterExtraView",
+                    "inputs": {"reference_image": ["70", 0],
+                               "reference_image_mask": ["70", 1],
+                               "image": ["65", 0],
+                               "character": 2 if gap_swap else 1,
+                               "replacement_mode": True,
+                               "mask": ["67", 0]}}
+        ref_out, ref_mask_out = ["68", 0], ["68", 1]
     if qc_only:
         # QC gate (completion plan step 1): tracking + reference build
         # only -- no sampling, no finish. Run this first on a pod; if
@@ -1134,8 +1162,8 @@ def video_replace_model_scail_gap(
                     "model": ["7", 0], "clip": ["8", 0],
                     "vae": ["11", 0], "pose_video": ["2", 0],
                     "pose_video_mask": ["17", 0],
-                    "reference_image": ["70", 0],
-                    "reference_image_mask": ["70", 1],
+                    "reference_image": ref_out,
+                    "reference_image_mask": ref_mask_out,
                     "base_prompt": base_prompt,
                     "negative_prompt": negative_prompt,
                     "character_prompts": character_prompts,
