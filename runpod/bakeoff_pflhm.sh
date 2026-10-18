@@ -82,7 +82,11 @@ if ! "$PY" -c "import torch, pytorch3d, pointops, gsplat, spconv, torch_scatter,
   PIPB git+https://github.com/ashawkey/diff-gaussian-rasterization/ || fail dgr
   PIPB git+https://github.com/camenduru/simple-knn/ || fail simple-knn
   PIPB gsplat==1.4.0 || fail gsplat
-  (cd "$REPO" && PIPB ./lib/pointops/) || (cd "$REPO/lib/pointops" && "$PY" setup.py install) || fail pointops
+  (cd "$REPO" && PIPB ./lib/pointops/) || fail pointops
+  # pointops' setup.py declares no packages - it only builds the pointops_cuda
+  # extension. The importable package is the lib/pointops directory itself
+  # (it carries __init__.py), so put lib/ on the venv path via a .pth file.
+  echo "$REPO/lib" > "$VENV/lib/python3.10/site-packages/lhmpp_lib.pth"
 fi
 "$PY" -c "import torch, pytorch3d, pointops, gsplat, spconv, torch_scatter, xformers; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))" || fail imports
 echo "BAKE-IMPORTS-OK"
