@@ -761,3 +761,91 @@ def test_longvideo_face_lock_success_reports_plain_done(tmp_path,
     assert job.get("phase") == "done"
     assert not job.get("warning")
     assert job["result_name"].endswith("_longvideo_facelock.mp4")
+
+
+# ------------------------------------------------------- Stage 1 GUI ----
+
+def _seed_job_with_files(server, files, result_name):
+    """Register a done job and plant files in its results folder."""
+    _, _, res = server
+    job_id = ss.JOBS.new("base.mp4", "gpu_replace", "Test Job", {})
+    jobdir = os.path.join(res, job_id)
+    os.makedirs(jobdir, exist_ok=True)
+    for name in files:
+        with open(os.path.join(jobdir, name), "wb") as f:
+            f.write(b"x" * 64)
+    ss.JOBS.update(job_id, status="done", progress=100,
+                   result_name=result_name,
+                   result_url=f"/api/result/{job_id}/{result_name}")
+    return job_id
+
+
+def test_job_deliverables_locked_is_primary(server):
+    job_id = _seed_job_with_files(server, [
+        "clip_gpu_replace.mp4", "clip_locked_neutral.mp4",
+        "scail_replace_00001.mp4", "_facelock_silent.mp4",
+    ], "clip_gpu_replace.mp4")
+    with urllib.request.urlopen(server[0] + "/api/job/" + job_id) as r:
+        job = json.loads(r.read())
+    dels = job["deliverables"]
+    names = [d["name"] for d in dels]
+    # Locked final first; engine intermediate + scratch files hidden.
+    assert names == ["clip_locked_neutral.mp4", "clip_gpu_replace.mp4"]
+    assert dels[0]["primary"] is True
+    assert dels[0]["label"] == "Face-locked final"
+    assert dels[1]["label"] == "Raw render"
+    assert job["primary_name"] == "clip_locked_neutral.mp4"
+    assert job["primary_url"].endswith("/clip_locked_neutral.mp4")
+
+
+def test_jobs_list_primary_prefers_locked(server):
+    job_id = _seed_job_with_files(server, ["out.mp4", "out_locked.mp4"],
+                                  "out.mp4")
+    with urllib.request.urlopen(server[0] + "/api/jobs") as r:
+        jobs = json.loads(r.read())["jobs"]
+    entry = next(j for j in jobs if j["job_id"] == job_id)
+    assert entry["primary_name"] == "out_locked.mp4"
+    assert entry["has_clips"] is False
+
+
+def test_job_clips_route_not_shadowed(server):
+    # The /clips route must return JSON (it used to be shadowed by the
+    # generic /api/job/ prefix route and 404 for every job).
+    job_id = _seed_job_with_files(server, ["out.mp4"], "out.mp4")
+    chain = os.path.join(server[2], job_id, "chain")
+    os.makedirs(chain, exist_ok=True)
+    with open(os.path.join(chain, "clip_01.mp4"), "wb") as f:
+        f.write(b"x")
+    status, body, _ = _get(server[0], f"/api/job/{job_id}/clips")
+    assert status == 200
+    data = json.loads(body)
+    assert [c["name"] for c in data["clips"]] == ["clip_01.mp4"]
+    with urllib.request.urlopen(server[0] + "/api/job/" + job_id) as r:
+        job = json.loads(r.read())
+    assert job["has_clips"] is True
+
+
+@NEEDS_PIL
+def test_media_listing_roles_and_file_route(server):
+    base, up, _ = server
+    png = _make_png()
+    with open(os.path.join(up, "ref1.jpg"), "wb") as f:
+        f.write(png)
+    with open(os.path.join(up, ".media_roles.json"), "w") as f:
+        json.dump({"ref1.jpg": {"role": "face_ref",
+                                "label": "Face reference"}}, f)
+    with urllib.request.urlopen(base + "/api/media") as r:
+        media = json.loads(r.read())["media"]
+    item = next(m for m in media if m["name"] == "ref1.jpg")
+    assert item["role"] == "face_ref"
+    assert item["role_label"] == "Face reference"
+    assert item["url"] == "/api/media/file/ref1.jpg"
+    assert item["mtime"] > 0
+    status, body, _ = _get(base, "/api/media/file/ref1.jpg")
+    assert status == 200 and body == png
+    # Traversal must not escape the uploads dir.
+    try:
+        _get(base, "/api/media/file/..%2Fstudio_server.py")
+        raise AssertionError("expected 404 for traversal")
+    except urllib.error.HTTPError as e:
+        assert e.code == 404
