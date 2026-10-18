@@ -1,8 +1,17 @@
 #!/bin/bash
 # BAKEOFF-PFLHM-V1 — PF-LHM (LHM++) view-count bake-off on a RunPod pod.
-# Bakes avatars from 1 / 8 / 16 graded reference views, renders each with
-# the same stock motion, and drops the three videos (plus a T-pose PLY of
-# the 16-view avatar) into ComfyUI/output/bakeoff/ for pickup.
+# Bakes avatars from 1 / 8 graded reference views (the vendor's headless
+# entry and Gradio app both cap at 8 views: test_app_case.py slices [:8],
+# app.py MV_IMAGES_THRESHOLD=8 — a "16-view" run through them would
+# silently bake the first 8). The 16-view set stays staged in bake_inputs
+# for a possible later custom driver. Renders each bake with the same
+# stock motion, and drops the two videos (plus a T-pose PLY of the
+# 8-view avatar) into ComfyUI/output/bakeoff/ for pickup.
+# v9 (audit rev): checkpoint resolved through the vendor's own
+# AutoModelQuery ModelScope branch (v8 hand-assumed the on-disk path and
+# failed weights-missing after a successful download); motion picked by
+# the vendor contract (case dir + smplx_params); bake output copied from
+# the vendor's fixed name output.mp4 (no newest-file guessing).
 # Inputs arrive via ComfyUI/input/bakeoff/set{1,8,16}/ (uploaded through
 # the ComfyUI API while this script installs). Idempotent: re-running
 # skips stages whose outputs already exist.
@@ -93,21 +102,37 @@ echo "BAKE-IMPORTS-OK"
 
 # ---- Stage 3: weights + motion videos ------------------------------------
 cd "$REPO" || fail cd
-CKPT=./pretrained_models/Damo_XR_Lab/LHMPP-700M-PixelShuffle
-if [ ! -d "$CKPT" ]; then
+# Priors: the vendor's own gate (prior_model_check) is the existence of
+# pretrained_models/human_model_files; ensure it the vendor's way.
+if [ ! -e ./pretrained_models/human_model_files ]; then
   "$PY" scripts/download_pretrained_models.py --prior || fail download-prior
-  "$PY" -c "from modelscope import snapshot_download; snapshot_download(model_id='Damo_XR_Lab/LHMPP-700M-PixelShuffle', cache_dir='./pretrained_models')" || fail download-weights
 fi
-[ -d "$CKPT" ] || fail weights-missing
+[ -e ./pretrained_models/human_model_files ] || fail prior-missing
+# Main checkpoint: resolve through the vendor's own AutoModelQuery
+# (ModelScope branch). It downloads via snapshot_download if needed and
+# returns the canonical checkpoint dir; v8 hand-assumed the path and
+# failed here after a successful download.
+CKPT=$("$PY" -c "
+from core.utils.model_download_utils import AutoModelQuery
+q = AutoModelQuery(save_dir='./pretrained_models')
+print(q.query_modelscope_model('LHMPP-700M-PixelShuffle', local_only=False).strip())
+" | tail -1)
+[ -n "$CKPT" ] && [ -d "$CKPT" ] && [ -f "$CKPT/model.safetensors" ] || fail weights-missing
+echo "checkpoint: $CKPT"
 if [ ! -d ./motion_video ]; then
   "$PY" scripts/download_motion_video.py || fail download-motion
 fi
 MOTION=""
-for cand in ./motion_video/Dance_I/Dance_I.mp4 ./motion_video/TAICHI/TAICHI.mp4; do
+for cand in ./motion_video/Dance_I/Dance_I.mp4 ./motion_video/TaiChi/TaiChi.mp4 ./motion_video/TAICHI/TAICHI.mp4; do
   [ -f "$cand" ] && MOTION="$cand" && break
 done
 if [ -z "$MOTION" ]; then
-  MOTION=$(find ./motion_video -name "*.mp4" | head -1)
+  # Vendor contract: the motion video's own directory must also contain
+  # smplx_params/ and the file is named after its case directory.
+  MOTION=$(find ./motion_video -mindepth 2 -name "*.mp4" | while read -r f; do
+    d=$(dirname "$f")
+    [ "$(basename "$f" .mp4)" = "$(basename "$d")" ] && [ -d "$d/smplx_params" ] && echo "$f"
+  done | head -1)
 fi
 [ -n "$MOTION" ] || fail motion-missing
 echo "motion: $MOTION"
@@ -129,8 +154,8 @@ for s in set1 set8 set16; do
 done
 stage images
 
-# ---- Stage 5: the three bakes ---------------------------------------------
-for s in set1 set8 set16; do
+# ---- Stage 5: the bakes (1-view and 8-view; vendor cap is 8) -------------
+for s in set1 set8; do
   N=${WANT[$s]}
   if [ ! -f "$OUT/bakeoff_views$N.mp4" ]; then
     "$PY" scripts/test/test_app_case.py \
@@ -140,20 +165,21 @@ for s in set1 set8 set16; do
       --motion_video "$MOTION" \
       --ref_view "$N" \
       --output_dir "./bake_outputs/$s" || fail "bake-$s"
-    VID=$(find "./bake_outputs/$s" -name "*.mp4" -printf "%T@ %p\n" 2>/dev/null | sort -n | tail -1 | cut -d" " -f2-)
-    [ -n "$VID" ] || fail "bake-output-$s"
-    cp "$VID" "$OUT/bakeoff_views$N.mp4" || fail "bake-copy-$s"
+    # The vendor writes exactly <output_dir>/output.mp4
+    # (core/utils/app_utils.py prepare_input_and_output).
+    [ -f "./bake_outputs/$s/output.mp4" ] || fail "bake-output-$s"
+    cp "./bake_outputs/$s/output.mp4" "$OUT/bakeoff_views$N.mp4" || fail "bake-copy-$s"
   fi
   echo "bake $s -> $OUT/bakeoff_views$N.mp4"
 done
 stage bakes
 
-# ---- Stage 6: T-pose PLY of the 16-view avatar (asset; non-fatal) ---------
-if [ ! -f "$OUT/avatar_16view_tpose.ply" ]; then
+# ---- Stage 6: T-pose PLY of the 8-view avatar (asset; non-fatal) ----------
+if [ ! -f "$OUT/avatar_8view_tpose.ply" ]; then
   "$PY" scripts/inference/to_gs_ply.py \
     --model_path "$CKPT" \
-    --image_glob "./bake_inputs/set16/*.jpg" \
-    --output "$OUT/avatar_16view_tpose.ply" || echo "PLY export failed (non-fatal)"
+    --image_glob "./bake_inputs/set8/*.jpg" \
+    --output "$OUT/avatar_8view_tpose.ply" || echo "PLY export failed (non-fatal)"
 fi
 stage ply
 
