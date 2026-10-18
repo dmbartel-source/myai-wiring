@@ -1178,7 +1178,8 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                     composite_expand=int(sk.get("composite_expand", 16)),
                     composite_feather=int(sk.get("composite_feather", 8)),
                     gap_swap=bool(p.get("gap_swap")),
-                    zoned=sk.get("zoned") not in (False, 0, "false"),
+                    zoned=p.get("zoned", True)
+                        not in (False, 0, "false"),
                     closeup_image=gap_closeup,
                     dit_file=gap_dit,
                     person_lora_strength=scail_person,
