@@ -743,6 +743,17 @@ def _ref_face_crop(ref_photo_path: str):
 FACE_LOCK_FAILED_NOTE = "face lock FAILED — showing unlocked version"
 
 
+def _lock_failure_note(e: BaseException) -> str:
+    """The Face Lock failure note WITH its reason. Until Oct 17 the
+    call sites swallowed the exception into a bare boolean, so the
+    failure repeated for days with no diagnosable record anywhere.
+    Capture it in the job's warning AND print it (the user service's
+    stdout lands in the journal)."""
+    note = f"{FACE_LOCK_FAILED_NOTE}: {type(e).__name__}: {e}"
+    print(f"[face_lock] {note}", flush=True)
+    return note
+
+
 def _face_lock(video_path: str, ref_photo_path: str, out_path: str,
                workdir: str) -> str:
     """Composite the reference photo's face onto every frame of a video.
@@ -1195,6 +1206,7 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
     if not saved:
         raise RuntimeError("GPU pod finished but produced no output files")
     gpu_lock_failed = False
+    gpu_lock_error = None
     if gen_id == "gpu_replace" and gpu_src_video:
         # VACE renders silent video: put the original audio back,
         # then Face-Lock the reference's real face over the render.
@@ -1213,8 +1225,9 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                 _face_lock(cur, gpu_face_ref, locked, jobdir)
                 if os.path.exists(locked):
                     cur = locked
-            except Exception:
+            except Exception as e:
                 gpu_lock_failed = True
+                gpu_lock_error = _lock_failure_note(e)
         saved[0] = cur
     JOBS.update(job_id, status="running", progress=95,
                 phase="saving result")
@@ -1226,7 +1239,7 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
     done_extra = {"phase": "done"}
     if gpu_lock_failed:
         done_extra = {"phase": f"done — {FACE_LOCK_FAILED_NOTE}",
-                      "warning": FACE_LOCK_FAILED_NOTE}
+                      "warning": gpu_lock_error or FACE_LOCK_FAILED_NOTE}
     JOBS.update(job_id, status="done", progress=100,
                 result_url=f"/api/result/{job_id}/{result_name}",
                 result_name=result_name, **done_extra)
@@ -1360,6 +1373,7 @@ def _run_job(job_id: str) -> None:
             # face back onto the result. I2V only (source media is the
             # reference photo). Failure keeps the unlocked result.
             lock_failed = False
+            lock_error = None
             if (job["params"].get("face_lock") and mode == "i2v"
                     and media_type(job["media"]) == "image"):
                 try:
@@ -1369,14 +1383,15 @@ def _run_job(job_id: str) -> None:
                     _face_lock(dest, mpath,
                                os.path.join(jobdir, locked_name), jobdir)
                     result_name = locked_name
-                except Exception:
+                except Exception as e:
                     lock_failed = True
+                    lock_error = _lock_failure_note(e)
             result_name = os.path.basename(
                 os.path.join(jobdir, result_name))
             done_extra = {"phase": "done"}
             if lock_failed:
                 done_extra = {"phase": f"done — {FACE_LOCK_FAILED_NOTE}",
-                              "warning": FACE_LOCK_FAILED_NOTE}
+                              "warning": lock_error or FACE_LOCK_FAILED_NOTE}
             JOBS.update(job_id, status="done", progress=100,
                         result_url=f"/api/result/{job_id}/{result_name}",
                         result_name=result_name, **done_extra)
@@ -1581,6 +1596,7 @@ def _run_job(job_id: str) -> None:
                 _concat_normalized(rendered, gen, mpath)
             body_video = gen
             lock_failed = False
+            lock_error = None
             if p.get("face_lock"):
                 try:
                     JOBS.update(job_id, status="running", progress=93,
@@ -1589,9 +1605,10 @@ def _run_job(job_id: str) -> None:
                                           f"{base}_animate_locked.mp4")
                     _face_lock(gen, ref_path, locked, jobdir)
                     body_video = locked
-                except Exception:
+                except Exception as e:
                     body_video = gen  # keep the generative result
                     lock_failed = True
+                    lock_error = _lock_failure_note(e)
             result_name = f"{base}_fullreplace.mp4"
             _mux_audio(body_video, mpath,
                        os.path.join(jobdir, result_name))
@@ -1608,7 +1625,7 @@ def _run_job(job_id: str) -> None:
             done_extra = {"phase": "done"}
             if lock_failed:
                 done_extra = {"phase": f"done — {FACE_LOCK_FAILED_NOTE}",
-                              "warning": FACE_LOCK_FAILED_NOTE}
+                              "warning": lock_error or FACE_LOCK_FAILED_NOTE}
             JOBS.update(job_id, status="done", progress=100,
                         result_url=f"/api/result/{job_id}/{result_name}",
                         result_name=result_name, **done_extra)
@@ -1736,6 +1753,7 @@ def _run_job(job_id: str) -> None:
             # True-to-reference face lock on the stitched video: put the
             # reference photo's real face back over the AI's drifted one.
             lock_failed = False
+            lock_error = None
             if p.get("face_lock") and ref_image:
                 _ref_p = safe_media_path(ref_image)
                 if _ref_p:
@@ -1748,12 +1766,13 @@ def _run_job(job_id: str) -> None:
                                    os.path.join(jobdir, _locked_name),
                                    jobdir)
                         result_name = _locked_name
-                    except Exception:
+                    except Exception as e:
                         lock_failed = True
+                        lock_error = _lock_failure_note(e)
             done_extra = {"phase": "done"}
             if lock_failed:
                 done_extra = {"phase": f"done — {FACE_LOCK_FAILED_NOTE}",
-                              "warning": FACE_LOCK_FAILED_NOTE}
+                              "warning": lock_error or FACE_LOCK_FAILED_NOTE}
             JOBS.update(job_id, status="done", progress=100,
                         result_url=f"/api/result/{job_id}/{result_name}",
                         result_name=result_name, **done_extra)
