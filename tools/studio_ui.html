@@ -234,6 +234,13 @@ select{background:var(--bg2); color:var(--txt); border:1px solid var(--line);
   border:1px solid var(--line); border-radius:var(--r-md); margin:6px 0;
   cursor:pointer; background:var(--panel2);}
 .stage-row.on{border-color:var(--acc); box-shadow:0 0 0 1px var(--acc);}
+/* job clarity facts (Stage 2) */
+.jobmeta{color:var(--faint); font-size:12.5px; margin-top:3px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.facts{margin:8px 0;}
+.facts .frow{display:flex; gap:8px; padding:2.5px 0; font-size:13px;}
+.facts .fk{color:var(--faint); min-width:92px; flex-shrink:0;}
+.facts .fv{color:var(--txt); word-break:break-word; min-width:0;}
 .hidden{display:none !important;}
 footer.hint{text-align:center; color:var(--faint); font-size:12.5px; padding:20px;}
 </style>
@@ -781,8 +788,10 @@ async function previewClips(jobId, detailId){
   if(!detail) return;
   // Expand the detail section so clips are visible.
   detail.classList.remove("hidden");
+  jobUi.expanded.add(jobId);
   let wrap = detail.querySelector(".clip-previews");
-  if(wrap){ wrap.remove(); return; }  // toggle off
+  if(wrap){ wrap.remove(); jobUi.clipsOpen.delete(jobId); return; }  // toggle off
+  jobUi.clipsOpen.add(jobId);
   wrap = document.createElement("div");
   wrap.className = "clip-previews";
   wrap.innerHTML = '<div style="color:var(--dim);margin:8px 0">Loading clips…</div>';
@@ -808,31 +817,124 @@ function fmtElapsed(s){
   if(s < 3600) return Math.floor(s/60) + "m " + (s%60) + "s";
   return Math.floor(s/3600) + "h " + Math.floor((s%3600)/60) + "m";
 }
+/* ---------- job list state: survives refreshes (Stage 2) ---------- */
+const jobUi = { expanded:new Set(), stageSel:{}, clipsOpen:new Set() };
+let jobsAnyActive = true;  // until the first fetch says otherwise
+
+function refNamesOf(j){
+  const p = j.params || {};
+  const out = [];
+  const add = v => {
+    if(typeof v === "string" && v) out.push(v);
+    else if(Array.isArray(v)) for(const x of v)
+      if(typeof x === "string" && x) out.push(x);
+  };
+  add(p.ref_media_names); add(p.reference_media); add(p.ref_media);
+  add(p.ref_image); add(p.ref_video);
+  return [...new Set(out)];
+}
+const ENGINE_LABEL = {scail:"SCAIL-2", gap:"GAP", vace:"VACE"};
+function jobFactsHtml(j){
+  const p = j.params || {};
+  const rows = [];
+  const row = (k, v)=>{ if(v !== undefined && v !== null && v !== "")
+    rows.push([k, String(v)]); };
+  const onoff = v => v ? "on" : "off";
+  row("Source", j.media);
+  const refs = refNamesOf(j);
+  if(refs.length) row("References", refs.join(", "));
+  let engine = "";
+  if(p.engine) engine = ENGINE_LABEL[p.engine] || p.engine;
+  else if(p.model) engine = String(p.model);
+  else if(j.kind === "longvideo" && p.chain_model) engine = String(p.chain_model);
+  else if(j.kind === "v2v_generate") engine = j.name;
+  else if(j.kind === "face_replace") engine = "Face Replace (local)";
+  else if(j.kind === "animate_replace") engine = "Wan Animate";
+  else if(j.kind === "model_replace") engine = "Seedance R2V";
+  row("Engine", engine);
+  if("person_lora" in p){
+    let v = onoff(p.person_lora);
+    if(p.person_lora){
+      if(p.person_lora_version) v += " · " + p.person_lora_version;
+      if(p.person_lora_strength !== undefined && p.person_lora_strength !== null)
+        v += " · strength " + p.person_lora_strength;
+    }
+    row("Person LoRA", v);
+  }
+  if("face_lock" in p) row("Face lock", onoff(p.face_lock));
+  if("composite" in p) row("Composite", onoff(p.composite));
+  const extras = [];
+  if(p.seedvr2) extras.push("SeedVR2 finish");
+  if(p.gap_swap) extras.push("GAP swap");
+  if(p.zoned) extras.push("zoned");
+  if(p.closeup) extras.push("close-up pass");
+  if(p.dit_fp16) extras.push("fp16 DiT");
+  if(extras.length) row("Extras", extras.join(", "));
+  const samp = [];
+  if(p.steps !== undefined) samp.push(p.steps + " steps");
+  if(p.cfg !== undefined) samp.push("cfg " + p.cfg);
+  if(p.seed !== undefined) samp.push("seed " + p.seed);
+  if(samp.length) row("Sampling", samp.join(" · "));
+  const size = [];
+  if(p.width && p.height) size.push(p.width + "×" + p.height);
+  if(p.frames) size.push(p.frames + " frames");
+  if(size.length) row("Size", size.join(" · "));
+  if(p.duration_s) row("Duration", p.duration_s + "s");
+  if(p.target_duration_s) row("Target length", p.target_duration_s + "s"
+    + (p.n_clips ? " · " + p.n_clips + " clips" : ""));
+  if(p.chain_mode) row("Chaining", p.chain_mode);
+  if(p.quality) row("Quality", p.quality
+    + (p.resolution ? " · " + p.resolution : ""));
+  if(p.start !== undefined || p.end !== undefined)
+    row("Segment", (p.start || 0) + "s → " + (p.end ? p.end + "s" : "end"));
+  if(p.factor !== undefined) row("Speed", p.factor + "×");
+  if(p.preset) row("Crop", p.preset);
+  if(p.angle !== undefined) row("Rotate", p.angle + "°");
+  if(p.filter) row("Filter", p.filter
+    + (p.amount !== undefined && p.amount !== 1 ? " (" + p.amount + ")" : ""));
+  if(p.timestamp !== undefined) row("Frame at", p.timestamp + "s");
+  if(p.media2) row("Merge with", p.media2);
+  if(p.prompt) row("Prompt", String(p.prompt).slice(0, 140));
+  if(!rows.length) return "";
+  return '<div class="facts">' + rows.map(r =>
+    '<div class="frow"><span class="fk">' + esc(r[0])
+    + '</span><span class="fv">' + esc(r[1]) + "</span></div>").join("")
+    + "</div>";
+}
+function watchJob(jobId){
+  show("result");
+  $("#result-body").innerHTML = `<div class="spinner"></div><p style="text-align:center;color:var(--dim)">Watching job…</p><div class="phase-line" id="job-phase"></div>`;
+  pollJob(jobId);
+}
 async function refreshJobs(){
   const el = document.querySelector("#jobs-list");
   if(!el) return;
   try{
     const r = await api("/api/jobs");
     const jobs = r.jobs || [];
+    jobsAnyActive = jobs.some(j => j.status === "running" || j.status === "queued");
     const emptyEl = document.querySelector("#jobs-empty");
     if(!jobs.length){ el.innerHTML = ""; if(emptyEl) emptyEl.classList.remove("hidden"); return; }
     if(emptyEl) emptyEl.classList.add("hidden");
     el.innerHTML = jobs.map(j=>{
-      const st = j.status === "done" ? "✅" : (j.status === "failed" || j.status === "error") ? "❌" : "⏳";
+      const st = j.status === "done" ? "✅" : (j.status === "failed" || j.status === "error") ? "❌" : j.status === "cancelled" ? "🚫" : j.status === "interrupted" ? "⚠️" : "⏳";
       const prog = (j.status === "running" || j.status === "queued") ? " " + (j.progress||0) + "%" : "";
       const phase = j.phase ? " — " + esc(j.phase) : "";
-      const link = (j.primary_url || j.result_url) ? ' <a href="' + esc(j.primary_url || j.result_url) + '" style="color:var(--blue)">▶ view</a>' : "";
+      const link = (j.primary_url || j.result_url) ? ' <a href="' + esc(j.primary_url || j.result_url) + '" style="color:var(--acc)">▶ view</a>' : "";
       const err = j.error ? '<div class="err" style="margin-top:4px">' + esc(String(j.error).slice(0,200)) + "</div>" : "";
-      const resume = (j.status === "running" || j.status === "queued") ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:8px" onclick="event.stopPropagation();pollJob(\'' + j.job_id + '\')">watch</button>' : "";
+      const resume = (j.status === "running" || j.status === "queued") ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:8px" onclick="event.stopPropagation();watchJob(\'' + j.job_id + '\')">watch</button>' : "";
       const cancel = (j.status === "running" || j.status === "queued") ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:4px;color:var(--err)" onclick="event.stopPropagation();cancelJob(\'' + j.job_id + '\')">✕</button>' : "";
       const jid = esc(j.job_id);
       const detailId = "job-detail-" + jid;
       const clipsBtn = (j.has_clips && (j.status === "running" || j.status === "queued" || j.status === "done")) ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:4px" onclick="event.stopPropagation();previewClips(\'' + j.job_id + '\',\'' + detailId + '\')">🎬 clips</button>' : "";
-      const bar = (j.status === "running" || j.status === "queued") ? '<div style="background:var(--card2);border-radius:6px;height:6px;margin-top:8px"><div style="background:var(--acc);height:6px;border-radius:6px;width:' + (j.progress||0) + '%"></div></div>' : "";
+      const bar = (j.status === "running" || j.status === "queued") ? '<div style="background:var(--panel2);border-radius:6px;height:6px;margin-top:8px"><div style="background:var(--acc);height:6px;border-radius:6px;width:' + (j.progress||0) + '%"></div></div>' : "";
       const created = j.created ? new Date(j.created*1000).toLocaleString() : "";
       const elapsed = j.created ? fmtElapsed(Date.now()/1000 - j.created) : "";
-      const detailHtml = '<div id="' + detailId + '" class="hidden" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:13px;color:var(--dim)">'
+      const meta = j.media ? '<div class="jobmeta">' + esc(j.media) + "</div>" : "";
+      const open = jobUi.expanded.has(j.job_id);
+      const detailHtml = '<div id="' + detailId + '"' + (open ? "" : ' class="hidden"') + ' style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:13px;color:var(--dim)">'
         + '<div id="' + detailId + '-stages"></div>'
+        + jobFactsHtml(j)
         + '<div><b style="color:var(--txt)">Job ID:</b> ' + jid + '</div>'
         + (j.phase ? '<div><b style="color:var(--txt)">Phase:</b> ' + esc(j.phase) + '</div>' : "")
         + '<div><b style="color:var(--txt)">Status:</b> ' + esc(j.status) + ' (' + (j.progress||0) + '%)</div>'
@@ -841,16 +943,43 @@ async function refreshJobs(){
         + (j.primary_url || j.result_url ? '<div style="margin-top:8px"><a href="' + esc(j.primary_url || j.result_url) + '" style="color:var(--acc)">▶ View result</a></div>' : "")
         + '</div>';
       return '<div class="card" style="margin-bottom:8px;padding:10px;display:block;cursor:pointer" onclick="toggleJobDetail(\'' + j.job_id + '\',\'' + detailId + '\')">'
-        + '<div>' + st + " <b>" + esc(j.name||j.kind) + "</b>" + prog + phase + link + resume + cancel + clipsBtn + "</div>" + bar + detailHtml + err + "</div>";
+        + '<div>' + st + " <b>" + esc(j.name||j.kind) + "</b>" + prog + phase + link + resume + cancel + clipsBtn + "</div>" + meta + bar + detailHtml + err + "</div>";
     }).join("");
+    // Restore expansion, stage selection and clip previews that the
+    // re-render just wiped (Stage 2: polling must not collapse the UI).
+    for(const j of jobs){
+      const detailId = "job-detail-" + j.job_id;
+      if(jobUi.expanded.has(j.job_id))
+        loadJobStages(j.job_id, detailId + "-stages");
+      if(jobUi.clipsOpen.has(j.job_id) && j.has_clips
+         && !document.querySelector("#" + detailId + " .clip-previews"))
+        previewClips(j.job_id, detailId);
+    }
   }catch(e){ el.innerHTML = '<div class="err">Failed to load jobs</div>'; }
 }
+// Gentle auto-refresh while the Jobs screen is open and something is
+// running. Skipped while any jobs-list video is playing so a refresh
+// never restarts what David is watching.
+setInterval(()=>{
+  const s = document.querySelector("#screen-jobs");
+  if(!s || !s.classList.contains("active") || document.hidden) return;
+  if(!jobsAnyActive) return;
+  const playing = [...document.querySelectorAll("#jobs-list video")]
+    .some(v => !v.paused && !v.ended);
+  if(playing) return;
+  refreshJobs();
+}, 5000);
 function toggleJobDetail(jobId, detailId){
   const detail = document.getElementById(detailId);
   if(!detail) return;
   const opening = detail.classList.contains("hidden");
   detail.classList.toggle("hidden");
-  if(opening) loadJobStages(jobId, detailId + "-stages");
+  if(opening){
+    jobUi.expanded.add(jobId);
+    loadJobStages(jobId, detailId + "-stages");
+  }else{
+    jobUi.expanded.delete(jobId);
+  }
 }
 async function loadJobStages(jobId, wrapId){
   const wrap = document.getElementById(wrapId);
@@ -862,9 +991,11 @@ async function loadJobStages(jobId, wrapId){
     const dels = j.deliverables || [];
     if(!dels.length){ wrap.innerHTML = ""; return; }
     const prim = dels.find(d=>d.primary) || dels[0];
-    wrap.innerHTML = stagePlayerHtml(wrapId, prim)
+    // Restore the stage David picked earlier for this job, if any.
+    const sel = dels.find(d=>d.url === jobUi.stageSel[jobId]) || prim;
+    wrap.innerHTML = stagePlayerHtml(wrapId, sel)
       + '<div style="margin-top:6px">'
-      + dels.map(d=>stageRowHtml(wrapId, d)).join("")
+      + dels.map(d=>stageRowHtml(wrapId, d, jobId, d.url === sel.url)).join("")
       + "</div>"
       + '<a class="bigbtn ghost" style="text-align:center;text-decoration:none;display:block;min-height:48px;padding:10px" href="' + esc(prim.url) + '" download>⬇ Download final</a>';
   }catch(e){
@@ -877,17 +1008,18 @@ function stagePlayerHtml(wrapId, d){
     return '<video id="' + id + '" class="result-media" controls playsinline preload="metadata" src="' + esc(d.url) + '" style="margin:4px 0"></video>';
   return '<img id="' + id + '" class="result-media" src="' + esc(d.url) + '" style="margin:4px 0">';
 }
-function stageRowHtml(wrapId, d){
-  return '<div class="stage-row' + (d.primary ? " on" : "") + '" onclick="setStage(\'' + wrapId + '\',this,\'' + esc(d.url) + '\',\'' + esc(d.kind) + '\')">'
+function stageRowHtml(wrapId, d, jobId, isSel){
+  return '<div class="stage-row' + (isSel ? " on" : "") + '" onclick="setStage(\'' + wrapId + '\',this,\'' + esc(d.url) + '\',\'' + esc(d.kind) + '\',\'' + esc(jobId || "") + '\')">'
     + "<span>" + (d.kind === "video" ? "🎬" : "🖼") + "</span>"
     + '<div style="flex:1;min-width:0"><div style="color:var(--txt);font-weight:600;font-size:14px">' + esc(d.label) + "</div>"
     + '<div style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(d.name) + "</div></div>"
     + (d.primary ? '<span class="badge free">Final</span>' : "")
     + "</div>";
 }
-function setStage(wrapId, row, url, kind){
+function setStage(wrapId, row, url, kind, jobId){
   const wrap = document.getElementById(wrapId);
   if(!wrap) return;
+  if(jobId) jobUi.stageSel[jobId] = url;
   const player = document.getElementById(wrapId + "-player");
   if(player){
     const np = document.createElement(kind === "video" ? "video" : "img");
@@ -912,9 +1044,9 @@ function pollJob(jobId){  clearInterval(pollTimer);
           `<a class="bigbtn" style="text-align:center;text-decoration:none;display:block" href="${j.result_url}" download>⬇ Download</a>`
           + `<div id="result-stages"></div>`;
         loadJobStages(jobId, "result-stages");
-      }else if(j.status==="error"){
+      }else if(["error","failed","cancelled","interrupted"].includes(j.status)){
         clearInterval(pollTimer);
-        $("#result-body").innerHTML = `<div class="err">${esc(j.error||"render failed")}</div>`;
+        $("#result-body").innerHTML = `<div class="err">${esc(j.error||("job " + j.status))}</div>`;
       }
     }catch(e){ clearInterval(pollTimer);
       $("#result-body").innerHTML = `<div class="err">${esc(e.message)}</div>`; }
@@ -982,15 +1114,24 @@ function pickGenMedia(type, cb){
   clearGenPickerControls();
   w.classList.remove("hidden");
   g.innerHTML = "";
-  w.querySelector(".note").textContent = "This needs a photo — pick one:";
+  w.querySelector(".note").textContent = type==="video"
+    ? "This needs a video — pick one:"
+    : type==="image" ? "This needs a photo — pick one:" : "Pick one:";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "bigbtn ghost"; cancelBtn.id = "gen-pick-cancel";
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.addEventListener("click", ()=>{
+    w.classList.add("hidden"); clearGenPickerControls();
+  });
+  w.appendChild(cancelBtn);
   api("/api/media").then(data=>{
     const items = (data.media||[]).filter(m=> type==="any" ? true : m.type===type);
-    if(!items.length){ g.innerHTML = `<div class="note">No ${type}s yet — upload one first.</div>`; return; }
+    if(!items.length){ g.innerHTML = `<div class="note">No ${type==="any" ? "media" : type + "s"} yet — upload one first.</div>`; return; }
     for(const m of items){
       const d = document.createElement("div");
       d.className = "thumb";
       d.innerHTML = `<img loading="lazy" src="${m.thumb}">`;
-      d.addEventListener("click", ()=>{ w.classList.add("hidden"); cb(m); });
+      d.addEventListener("click", ()=>{ w.classList.add("hidden"); clearGenPickerControls(); cb(m); });
       g.appendChild(d);
     }
   });
@@ -1080,6 +1221,9 @@ function confirmGen(o, refs){
   $("#gen-dur-wrap").classList.toggle("hidden", !isVeniceI2V);
   // GPU (RunPod pod) options get the parameter block instead
   $("#gen-gpu-wrap").classList.toggle("hidden", !o.id.startsWith("gpu_"));
+  // The face-lock checkbox only applies to the hosted single-photo
+  // routes; GPU options ignore it (GPU Replace has its own toggle).
+  $("#gen-facelock-wrap").classList.toggle("hidden", o.id.startsWith("gpu_"));
   if(isVeniceI2V){
     const msel = $("#gen-model-sel");
     msel.innerHTML = "";
@@ -1417,7 +1561,9 @@ function showModelReplace(){
   }
   $("#mr-mode").querySelectorAll(".qbtn").forEach(b=>{
     b.classList.toggle("sel", b.dataset.mode===mrMode);
-    b.addEventListener("click", ()=>{ mrMode = b.dataset.mode; showModelReplace(); });
+    // onclick (not addEventListener): showModelReplace re-runs often and
+    // must not stack duplicate handlers on these static buttons.
+    b.onclick = ()=>{ mrMode = b.dataset.mode; showModelReplace(); };
   });
   $("#mr-prompt-wrap").classList.toggle("hidden", mrMode!=="ai");
   mrCost();
@@ -1682,9 +1828,9 @@ pollJob = function(jobId){
           `<a class="bigbtn" style="text-align:center;text-decoration:none;display:block" href="${j.result_url}" download>⬇ Download</a>`
           + `<div id="result-stages"></div>`;
         loadJobStages(jobId, "result-stages");
-      }else if(j.status==="error"){
+      }else if(["error","failed","cancelled","interrupted"].includes(j.status)){
         clearInterval(pollTimer);
-        $("#result-body").innerHTML = `<div class="err">${esc(j.error||"render failed")}</div>`;
+        $("#result-body").innerHTML = `<div class="err">${esc(j.error||("job " + j.status))}</div>`;
       }else if(j.phase && ph){
         ph.innerHTML = `<b>${esc(j.phase)}</b>`;
       }else if(j.phase){
