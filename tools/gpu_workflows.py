@@ -83,7 +83,8 @@ MODELS = {
 # from generated stills; v2 from real photos and reference-video
 # frames. The A/B selector resolves through person_lora_filename().
 PERSON_LORAS = {"v1": "skswoman.safetensors",
-                "v2": "skswoman_v2.safetensors"}
+                "v2": "skswoman_v2.safetensors",
+                "v3": "skswoman_v3.safetensors"}
 
 
 def person_lora_filename(version=None) -> str:
