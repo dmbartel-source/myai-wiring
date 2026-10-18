@@ -25,9 +25,15 @@ FREE_KB=$(df --output=avail -k /workspace | tail -1)
 echo "volume free KB: $FREE_KB"
 [ "$FREE_KB" -ge 16000000 ] || fail preflight-disk
 if ! curl -s -m 3 http://127.0.0.1:8188/system_stats >/dev/null 2>&1; then
+  # ComfyUI's Python deps live in the pod's ephemeral system python;
+  # a fresh pod needs them installed before ComfyUI can start.
+  if ! python3 -c "import tqdm" 2>/dev/null; then
+    echo "installing ComfyUI requirements into system python..."
+    python3 -m pip install -q -r /workspace/ComfyUI/requirements.txt || fail preflight-comfyui-deps
+  fi
   echo "starting ComfyUI..."
   (cd /workspace/ComfyUI && nohup python3 main.py --listen 0.0.0.0 --port 8188 >> /workspace/comfyui.log 2>&1 &)
-  for i in $(seq 1 45); do
+  for i in $(seq 1 150); do
     curl -s -m 3 http://127.0.0.1:8188/system_stats >/dev/null 2>&1 && break
     sleep 2
   done
