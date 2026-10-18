@@ -565,3 +565,20 @@ def test_video_replace_model_scail_gap_closeup_follows_swap():
     assert_links_valid(wf)
     # With the slots flipped, her close-up belongs to slot 2.
     assert wf["68"]["inputs"]["character"] == 2
+
+
+def test_video_replace_model_scail_gap_dit_default_fp8():
+    wf = gw.video_replace_model_scail_gap("v.mp4", "r.jpg")
+    assert wf["4"]["inputs"]["unet_name"] == gw.MODELS["scail_unet"]
+
+
+def test_video_replace_model_scail_gap_dit_fp16_override():
+    # Ladder-2 (Oct 18): the person LoRAs trained against the fp16
+    # DiT; the inference default is the fp8_scaled build. The
+    # override must land on the GAP graph's UNETLoader verbatim.
+    wf = gw.video_replace_model_scail_gap(
+        "v.mp4", "r.jpg",
+        dit_file="wan2.1_14B_SCAIL_2_fp16.safetensors")
+    assert_links_valid(wf)
+    assert wf["4"]["inputs"]["unet_name"] == \
+        "wan2.1_14B_SCAIL_2_fp16.safetensors"
