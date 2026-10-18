@@ -78,6 +78,23 @@ MODELS = {
     "seedvr2_vae": "ema_vae_fp16.safetensors",
 }
 
+# Person LoRA versions (trained on the pod, copied into loras/ like
+# MODELS["scail_person_lora"]; not bootstrap downloads). v1 learned
+# from generated stills; v2 from real photos and reference-video
+# frames. The A/B selector resolves through person_lora_filename().
+PERSON_LORAS = {"v1": "skswoman.safetensors",
+                "v2": "skswoman_v2.safetensors"}
+
+
+def person_lora_filename(version=None) -> str:
+    """Resolve a Person LoRA version key ("v1"/"v2") or an already
+    known filename to the file node 52 loads. Unknown or missing
+    values fall back to v1, preserving the pre-selector behaviour."""
+    if version in PERSON_LORAS.values():
+        return version
+    return PERSON_LORAS.get(str(version or "v1").strip().lower(),
+                            PERSON_LORAS["v1"])
+
 DEFAULT_NEGATIVE = (
     "low quality, blurry, distorted, deformed, watermark, text, "
     "extra limbs, bad anatomy, flicker, morphing"
@@ -565,6 +582,7 @@ def video_replace_model_scail(
     previous_frame_count: int = 5,
     relight_strength: float = 1.0,
     person_lora_strength: float = 0.0,
+    person_lora_file: str | None = None,
     seedvr2_resolution: int = 0,
     sort_by: str = "left_to_right",
     pose_strength: float = 1.0,
@@ -698,13 +716,15 @@ def video_replace_model_scail(
                                "strength_model": float(relight_strength)}}
         wf["7"]["inputs"]["model"] = ["51", 0]
     if person_lora_strength:
+        pl_file = (person_lora_filename(person_lora_file)
+                   if person_lora_file else MODELS["scail_person_lora"])
         # Person LoRA (skswoman, trained on the reference model's
         # own frames): last in the LoRA chain so her learned identity
         # has the final word before sampling.
         tail = "51" if relight_strength else "6"
         wf["52"] = {"class_type": "LoraLoaderModelOnly",
                     "inputs": {"model": [tail, 0],
-                               "lora_name": MODELS["scail_person_lora"],
+                               "lora_name": pl_file,
                                "strength_model":
                                    float(person_lora_strength)}}
         wf["7"]["inputs"]["model"] = ["52", 0]
@@ -913,6 +933,7 @@ def video_replace_model_scail_gap(
     dpo_strength: float = 1.0,
     relight_strength: float = 1.0,
     person_lora_strength: float = 0.0,
+    person_lora_file: str | None = None,
     pose_strength: float = 1.0,
     sort_by: str = "left_to_right",
     gap_swap: bool = False,
@@ -1041,11 +1062,13 @@ def video_replace_model_scail_gap(
                                "strength_model": float(relight_strength)}}
         wf["7"]["inputs"]["model"] = ["51", 0]
     if person_lora_strength:
+        pl_file = (person_lora_filename(person_lora_file)
+                   if person_lora_file else MODELS["scail_person_lora"])
         # Person LoRA (skswoman): see video_replace_model_scail.
         tail = "51" if relight_strength else "6"
         wf["52"] = {"class_type": "LoraLoaderModelOnly",
                     "inputs": {"model": [tail, 0],
-                               "lora_name": MODELS["scail_person_lora"],
+                               "lora_name": pl_file,
                                "strength_model":
                                    float(person_lora_strength)}}
         wf["7"]["inputs"]["model"] = ["52", 0]
