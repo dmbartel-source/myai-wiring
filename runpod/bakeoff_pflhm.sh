@@ -67,6 +67,7 @@ fi
 PY="$VENV/bin/python"
 PIP() { uv pip install --python "$PY" "$@"; }
 PIPB() { uv pip install --python "$PY" --no-build-isolation "$@"; }
+PIP pip setuptools wheel || fail seed-tools
 export TORCH_CUDA_ARCH_LIST="9.0"
 if ! "$PY" -c "import torch, pytorch3d, pointops, gsplat, spconv, torch_scatter, xformers" 2>/dev/null; then
   PIP torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https://download.pytorch.org/whl/cu121 || fail torch
