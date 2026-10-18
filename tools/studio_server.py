@@ -1116,6 +1116,20 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                     scail_person = 1.0
                 scail_person = min(5.0, max(0.0, scail_person))
             sk["person_lora_strength"] = scail_person
+            # Pivot wiring (Oct 18): the single-target SCAIL path
+            # picks HER track by SAM3 text prompts; the generic
+            # defaults ("woman"/"person") were part of the old
+            # fragility in a two-person frame. Specific per-job
+            # terms now reach the builder via sk, and composite
+            # joins sk so engine=scail can run the canonical
+            # no-composite finish (the GAP call reads it from p
+            # directly; the SCAIL calls take **sk).
+            if p.get("hero_prompt"):
+                sk["hero_prompt"] = str(p["hero_prompt"])
+            if p.get("ref_prompt"):
+                sk["ref_prompt"] = str(p["ref_prompt"])
+            sk["composite"] = (p.get("composite", True)
+                                not in (False, 0, "false"))
             # Which trained LoRA the selector loads: "v1"/"v2" (or a
             # known filename); unknown/missing falls back to v1.
             sk["person_lora_file"] = gw.person_lora_filename(
@@ -2446,7 +2460,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                   "composite_expand", "composite_feather", "composite",
                   "seedvr2", "gap_swap", "person_lora",
                   "person_lora_version", "zoned", "closeup",
-                  "person_lora_strength", "dit_fp16")
+                  "person_lora_strength", "dit_fp16", "hero_prompt",
+                  "ref_prompt")
                  if k in raw}
         media = body.get("media") or ""
         params = {"prompt": prompt, **knobs}
