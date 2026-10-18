@@ -50,19 +50,19 @@ git -C "$REPO" checkout -q "$LHMPP_SHA" || fail checkout
 stage clone
 
 # ---- Stage 2: python 3.10 venv + deps ------------------------------------
-if [ ! -x "$VENV/bin/python" ]; then
+# A venv counts only if its python AND pip actually run (a failed
+# ensurepip creation leaves a stub directory that must be cleared).
+if ! "$VENV/bin/python" -m pip --version >/dev/null 2>&1; then
+  rm -rf "$VENV"
   if command -v python3.10 >/dev/null 2>&1; then
-    python3.10 -m venv "$VENV" 2>/dev/null || {
-      python3 -m pip install --user -q uv || fail uv-install
-      export PATH="$HOME/.local/bin:$PATH"
-      uv python install 3.10 || fail uv-python
-      uv venv --python 3.10 "$VENV" || fail venv
-    }
-  else
+    python3.10 -m venv "$VENV" 2>/dev/null || true
+  fi
+  if ! "$VENV/bin/python" -m pip --version >/dev/null 2>&1; then
+    rm -rf "$VENV"
     python3 -m pip install --user -q uv || fail uv-install
     export PATH="$HOME/.local/bin:$PATH"
     uv python install 3.10 || fail uv-python
-    uv venv --python 3.10 "$VENV" || fail venv
+    uv venv --clear --python 3.10 "$VENV" || fail venv
   fi
 fi
 PY="$VENV/bin/python"
