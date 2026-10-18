@@ -733,6 +733,8 @@ def test_longvideo_face_lock_failure_is_surfaced(tmp_path, monkeypatch):
     assert job["status"] == "done", job
     assert "face lock FAILED" in (job.get("phase") or "")
     assert "face lock FAILED" in (job.get("warning") or "")
+    # The reason itself must survive (it was swallowed before Oct 17).
+    assert "no face detected in reference photo" in job["warning"]
     assert job["result_name"].endswith("_longvideo.mp4")
     # The per-clip lock was wired into the chain.
     assert seen.get("clip_lock_fn") is not None
