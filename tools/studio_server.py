@@ -157,6 +157,103 @@ def safe_media_path(name: str) -> str | None:
     return real
 
 
+_MEDIA_EXTS = IMAGE_EXTS | VIDEO_EXTS
+# Engine scratch outputs inside a job folder: real files, but not
+# deliverables a user should ever be shown as a "result".
+_INTERMEDIATE_PREFIXES = ("scail_replace", "gap_", "wan_", "vace_")
+
+
+def job_deliverables(job_id: str, result_name: str | None) -> list[dict]:
+    """Viewable deliverables in a job folder, best first.
+
+    Post-step finals (face-locked) outrank the recorded render, so the
+    file a job presents as its result is the finished one even when a
+    later step added a better version after the job record was written.
+    Scratch files (leading underscore/dot) and engine intermediates are
+    hidden.
+    """
+    jobdir = os.path.join(RESULTS_DIR, job_id)
+    try:
+        names = os.listdir(jobdir)
+    except OSError:
+        return []
+    found = []
+    for n in names:
+        if n.startswith(("_", ".")):
+            continue
+        if os.path.splitext(n)[1].lower() not in _MEDIA_EXTS:
+            continue
+        full = os.path.join(jobdir, n)
+        if not os.path.isfile(full):
+            continue
+        low = n.lower()
+        if "locked" in low or "facefusion" in low:
+            rank, label = 0, "Face-locked final"
+        elif result_name and n == result_name:
+            rank, label = 1, "Result"
+        elif low.startswith(_INTERMEDIATE_PREFIXES):
+            continue
+        else:
+            rank = 2
+            label = os.path.splitext(n)[0].replace("_", " ").strip().title()
+        try:
+            st = os.stat(full)
+            size, mtime = st.st_size, st.st_mtime
+        except OSError:
+            size, mtime = 0, 0
+        found.append({
+            "name": n, "label": label, "kind": media_type(n),
+            "url": f"/api/result/{job_id}/{n}",
+            "size": size, "mtime": mtime, "_rank": rank,
+        })
+    found.sort(key=lambda d: (d["_rank"], -d["mtime"]))
+    for i, d in enumerate(found):
+        d["primary"] = (i == 0)
+        del d["_rank"]
+    if len(found) > 1 and found[0]["label"] == "Result":
+        found[0]["label"] = "Final render"
+    if any(d["label"] == "Face-locked final" for d in found):
+        for d in found:
+            if d["label"] == "Result":
+                d["label"] = "Raw render"
+    return found
+
+
+def job_primary(job_id: str, result_name: str | None,
+                result_url: str | None) -> dict:
+    """The one file a job should present as its result."""
+    dels = job_deliverables(job_id, result_name)
+    prim = next((d for d in dels if d["primary"]), None)
+    if prim:
+        return {"primary_url": prim["url"], "primary_name": prim["name"],
+                "primary_kind": prim["kind"]}
+    return {"primary_url": result_url, "primary_name": result_name,
+            "primary_kind": media_type(result_name) if result_name else None}
+
+
+def job_has_clips(job_id: str) -> bool:
+    chain = os.path.join(RESULTS_DIR, job_id, "chain")
+    try:
+        return any(n.startswith("clip_") and n.endswith(".mp4")
+                   for n in os.listdir(chain))
+    except OSError:
+        return False
+
+
+def _media_roles() -> dict:
+    """Optional filename -> {role, label} map for the Library.
+
+    Lives at <UPLOAD_DIR>/.media_roles.json; absent file = no roles.
+    """
+    try:
+        with open(os.path.join(UPLOAD_DIR, ".media_roles.json"),
+                  encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def _paramspec(params: dict) -> dict:
     """Simplify a registry params dict for the UI catalog."""
     out = {}
@@ -1951,6 +2048,13 @@ class StudioHandler(BaseHTTPRequestHandler):
             self._api_v2v_models()
         elif path.startswith("/api/thumb/"):
             self._api_thumb(unquote(path[len("/api/thumb/"):]))
+        elif path.startswith("/api/media/file/"):
+            self._api_media_file(unquote(path[len("/api/media/file/"):]))
+        elif path.startswith("/api/job/") and path.endswith("/clips"):
+            # GET /api/job/<job_id>/clips — must precede the generic
+            # /api/job/ route below or it is shadowed by it.
+            job_id = path[len("/api/job/"):-len("/clips")]
+            self._api_job_clips(unquote(job_id))
         elif path.startswith("/api/job/"):
             self._api_job(path[len("/api/job/"):])
         elif path == "/api/jobs":
@@ -1962,11 +2066,6 @@ class StudioHandler(BaseHTTPRequestHandler):
                 self._api_result(unquote(parts[0]), unquote(parts[1]))
             else:
                 self.send_error(404)
-        elif path.startswith("/api/job/") and path.endswith("/clips"):
-            # GET /api/job/<job_id>/clips — list completed chain clips
-            # for preview during a running long-video job.
-            job_id = path[len("/api/job/"):-len("/clips")]
-            self._api_job_clips(unquote(job_id))
         else:
             self.send_error(404)
 
@@ -2027,6 +2126,7 @@ class StudioHandler(BaseHTTPRequestHandler):
 
     def _api_media(self):
         items = []
+        roles = _media_roles()
         try:
             names = sorted(os.listdir(UPLOAD_DIR))
         except OSError:
@@ -2038,13 +2138,37 @@ class StudioHandler(BaseHTTPRequestHandler):
             full = os.path.join(UPLOAD_DIR, n)
             if not os.path.isfile(full):
                 continue
-            items.append({
+            try:
+                st = os.stat(full)
+                size, mtime = st.st_size, st.st_mtime
+            except OSError:
+                size, mtime = os.path.getsize(full), 0
+            item = {
                 "name": n,
                 "type": mtype,
-                "size": os.path.getsize(full),
+                "size": size,
+                "mtime": mtime,
                 "thumb": f"/api/thumb/{n}",
-            })
+                "url": f"/api/media/file/{n}",
+            }
+            role = roles.get(n)
+            if isinstance(role, dict):
+                item["role"] = role.get("role", "")
+                item["role_label"] = role.get("label", "")
+            items.append(item)
         self._send_json({"media": items})
+
+    def _api_media_file(self, name: str):
+        """GET /api/media/file/<name> — serve an uploaded file itself
+        (the Library viewer plays/shows the real file, not a thumb)."""
+        path = safe_media_path(name)
+        if path is None:
+            self.send_error(404)
+            return
+        ctype, _ = mimetypes.guess_type(path)
+        with open(path, "rb") as f:
+            self._send_bytes(f.read(), ctype or "application/octet-stream",
+                             filename=os.path.basename(path))
 
     def _api_media_delete(self):
         """POST /api/media/delete {names: [...]} -> {deleted: [...]}."""
@@ -2107,21 +2231,36 @@ class StudioHandler(BaseHTTPRequestHandler):
         if job is None:
             self._send_json({"error": "unknown job"}, 404)
             return
-        self._send_json(job)
+        out = dict(job)
+        out["deliverables"] = job_deliverables(job_id,
+                                               job.get("result_name"))
+        out.update(job_primary(job_id, job.get("result_name"),
+                               job.get("result_url")))
+        out["has_clips"] = job_has_clips(job_id)
+        self._send_json(out)
 
     def _api_jobs(self):
         """GET /api/jobs -> {jobs: [...]}. Recent jobs, newest first."""
         with JOBS._lock:
             jobs = sorted(JOBS._jobs.values(),
                           key=lambda j: j.get("created", 0), reverse=True)
-            # Strip params to keep it light; keep status info
-            out = [{
-                "job_id": j["job_id"], "kind": j["kind"], "name": j["name"],
-                "status": j["status"], "progress": j["progress"],
-                "phase": j.get("phase", ""), "result_url": j["result_url"],
-                "result_name": j["result_name"], "error": j["error"],
-                "created": j["created"],
-            } for j in jobs[:20]]
+            # Strip params to keep it light; keep status info. Primary
+            # fields point at the file the job should present as its
+            # result (a later post-step final outranks the raw render).
+            out = []
+            for j in jobs[:20]:
+                entry = {
+                    "job_id": j["job_id"], "kind": j["kind"],
+                    "name": j["name"], "status": j["status"],
+                    "progress": j["progress"], "phase": j.get("phase", ""),
+                    "result_url": j["result_url"],
+                    "result_name": j["result_name"], "error": j["error"],
+                    "created": j["created"],
+                    "has_clips": job_has_clips(j["job_id"]),
+                }
+                entry.update(job_primary(j["job_id"], j["result_name"],
+                                         j["result_url"]))
+                out.append(entry)
         self._send_json({"jobs": out})
 
     def _api_result(self, job_id: str, filename: str):
