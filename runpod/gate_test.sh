@@ -1,5 +1,5 @@
 #!/bin/bash
-# GATE-TEST-V1 — MYAI measured-body gate test (plan GATE_TEST_PLAN.md).
+# GATE-TEST-V2 — MYAI measured-body gate test (plan GATE_TEST_PLAN.md).
 # Builds a dedicated venv, proves every precondition, then runs
 # gate_fit.py: segment 7 generated-set candidates -> select 4 heroes
 # by measured azimuth -> joint SMPL-X silhouette fit (shared shape +
@@ -7,7 +7,7 @@
 # Run ON THE POD, detached:
 #   setsid nohup bash /workspace/gate_test.sh > /workspace/gate_test.log 2>&1 < /dev/null &
 set -u
-echo "GATE-TEST-V1 starting $(date -u)"
+echo "GATE-TEST-V2 starting $(date -u)"
 cd /workspace
 VENV=/workspace/gatefit-venv
 WORK=/workspace/gate_test
@@ -39,7 +39,7 @@ uv pip install --python "$VENV/bin/python" torch==2.3.0 torchvision==0.18.0 \
   --index-url https://download.pytorch.org/whl/cu121
 uv pip install --python "$VENV/bin/python" pytorch3d fvcore iopath \
   -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt230/download.html
-uv pip install --python "$VENV/bin/python" smplx rembg scipy pillow numpy
+uv pip install --python "$VENV/bin/python" smplx rembg "onnxruntime==1.20.1" scipy pillow numpy
 echo "-- imports (the exact modules the test runs)"
 if "$VENV/bin/python" -c "import torch, pytorch3d, smplx, rembg, scipy; print('IMPORT-OK torch', torch.__version__, 'cuda', torch.cuda.is_available())"; then
   echo "import path OK"
