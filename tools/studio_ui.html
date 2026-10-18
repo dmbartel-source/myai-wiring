@@ -214,6 +214,26 @@ select{background:var(--bg2); color:var(--txt); border:1px solid var(--line);
 .clip-previews video{width:100%; border-radius:var(--r-sm); background:#000;
   border:1px solid var(--line); aspect-ratio:16/9; object-fit:cover;}
 .opbody{margin-top:6px;}
+
+/* library roles + viewer + job stages (Stage 1) */
+.rolebadge{position:absolute; left:5px; bottom:5px; max-width:92%;
+  background:rgba(76,141,255,.88); color:#fff; font-size:10px; font-weight:700;
+  padding:2px 7px; border-radius:999px; letter-spacing:.03em;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.viewer{position:fixed; inset:0; z-index:120; background:rgba(4,6,9,.97);
+  display:flex; flex-direction:column;}
+.viewer .vmedia{flex:1; display:flex; align-items:center; justify-content:center;
+  min-height:0; padding:10px;}
+.viewer .vmedia video, .viewer .vmedia img{max-width:100%; max-height:100%;
+  object-fit:contain; border-radius:var(--r-md); background:#000;}
+.viewer .vbar{background:var(--panel); border-top:1px solid var(--line);
+  padding:12px 14px calc(12px + env(safe-area-inset-bottom));}
+.viewer .vname{font-weight:700; font-size:16px; word-break:break-all;}
+.viewer .vmeta{color:var(--dim); font-size:13px; margin:3px 0 10px;}
+.stage-row{display:flex; gap:10px; align-items:center; padding:10px;
+  border:1px solid var(--line); border-radius:var(--r-md); margin:6px 0;
+  cursor:pointer; background:var(--panel2);}
+.stage-row.on{border-color:var(--acc); box-shadow:0 0 0 1px var(--acc);}
 .hidden{display:none !important;}
 footer.hint{text-align:center; color:var(--faint); font-size:12.5px; padding:20px;}
 </style>
@@ -247,6 +267,17 @@ footer.hint{text-align:center; color:var(--faint); font-size:12.5px; padding:20p
       <button class="bigbtn ghost" id="lib-delete-sel" style="flex:1;min-height:48px;padding:10px">🗑️ Delete (<span id="lib-sel-count">0</span>)</button>
       <button class="bigbtn ghost" id="lib-cancel-sel" style="flex:1;min-height:48px;padding:10px">Cancel</button>
     </div>
+    <input type="text" id="lib-search" placeholder="Search the library…" autocomplete="off">
+    <div class="ctl-row" style="margin:4px 0">
+      <label style="min-width:0">Sort</label>
+      <select id="lib-sort">
+        <option value="new">Newest first</option>
+        <option value="old">Oldest first</option>
+        <option value="name">Name A–Z</option>
+      </select>
+      <span id="lib-count" style="color:var(--faint);font-size:13px"></span>
+    </div>
+    <div id="lib-roles" style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0"></div>
     <div id="gallery-grid" class="grid"></div>
     <div id="gallery-empty" class="note">No media yet — upload something first.</div>
     <footer class="hint">Tap ⋯ on any item for actions. Tap Select for bulk delete.</footer>
@@ -539,34 +570,121 @@ let libFilter = "all";
 let libSelectMode = false;
 let libSelected = new Set();
 let libItems = [];
+let libSearch = "";
+let libSort = "new";
+let libRole = "all";
+const ROLE_SHORT = {face_ref:"Face ref", body_ref:"Body ref",
+  template:"Template", graded_frame:"Graded", frame_ungraded:"Ungraded",
+  result:"Result", still360:"360 still"};
+function roleShort(m){
+  if(m.role && ROLE_SHORT[m.role]) return ROLE_SHORT[m.role];
+  return m.role_label || m.role || "";
+}
+$("#lib-search").addEventListener("input", e=>{
+  libSearch = e.target.value.trim().toLowerCase(); renderGalleryGrid();
+});
+$("#lib-sort").addEventListener("change", e=>{
+  libSort = e.target.value; renderGalleryGrid();
+});
+function buildRoleChips(){
+  const wrap = $("#lib-roles");
+  const counts = {};
+  for(const m of libItems){ if(m.role) counts[m.role] = (counts[m.role]||0)+1; }
+  const roles = Object.keys(counts);
+  if(!roles.length){ wrap.innerHTML = ""; libRole = "all"; return; }
+  if(libRole!=="all" && !counts[libRole]) libRole = "all";
+  wrap.innerHTML = "";
+  const mk = (role, label)=>{
+    const b = document.createElement("button");
+    b.className = "chipbtn" + (libRole===role ? " sel" : "");
+    b.textContent = label;
+    b.addEventListener("click", ()=>{ libRole = role; buildRoleChips(); renderGalleryGrid(); });
+    wrap.appendChild(b);
+  };
+  mk("all", "All roles");
+  for(const r of roles) mk(r, (ROLE_SHORT[r]||r) + " (" + counts[r] + ")");
+}
 async function loadGallery(){
   const grid = $("#gallery-grid");
   try{
     const data = await api("/api/media");
     libItems = data.media||[];
+    buildRoleChips();
     renderGalleryGrid();
   }catch(e){ grid.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
 }
 function renderGalleryGrid(){
   const grid = $("#gallery-grid");
-  const items = libItems.filter(m => libFilter==="all" || m.type===libFilter);
+  let items = libItems.filter(m =>
+    (libFilter==="all" || m.type===libFilter) &&
+    (libRole==="all" || (m.role||"")===libRole) &&
+    (!libSearch || m.name.toLowerCase().includes(libSearch)));
+  if(libSort==="new") items.sort((a,b)=>(b.mtime||0)-(a.mtime||0));
+  else if(libSort==="old") items.sort((a,b)=>(a.mtime||0)-(b.mtime||0));
+  else items.sort((a,b)=>a.name.localeCompare(b.name));
+  const cnt = $("#lib-count");
+  if(cnt) cnt.textContent = items.length + " of " + libItems.length;
   $("#gallery-empty").style.display = items.length ? "none" : "block";
   grid.innerHTML = "";
   for(const m of items){
     const d = document.createElement("div");
     d.className = "thumb" + (selected && selected.name===m.name ? " sel" : "")
       + (libSelected.has(m.name) ? " lib-sel" : "");
+    const rs = roleShort(m);
     d.innerHTML = `<img loading="lazy" src="${m.thumb}" alt="">${m.type==="video"?'<span class="vtag">▶</span>':""}`
+      + (rs ? `<span class="rolebadge">${esc(rs)}</span>` : "")
       + `<button class="threedot" data-name="${esc(m.name)}">⋯</button>`
       + (libSelectMode ? `<div class="selcheck">${libSelected.has(m.name)?"✓":""}</div>` : "");
     d.querySelector(".threedot").addEventListener("click", (e)=>{ e.stopPropagation(); showMediaMenu(m); });
     d.addEventListener("click", ()=>{
       if(libSelectMode){ toggleLibSelect(m.name); return; }
-      selected = m; renderGalleryGrid(); show("create"); renderEffects();
+      openViewer(m);
     });
     grid.appendChild(d);
   }
   updateLibSelectBar();
+}
+function fmtBytes(n){
+  if(!n) return "";
+  if(n < 1024) return n + " B";
+  if(n < 1048576) return (n/1024).toFixed(0) + " KB";
+  return (n/1048576).toFixed(1) + " MB";
+}
+function openViewer(m){
+  closeViewer();
+  const v = document.createElement("div");
+  v.className = "viewer"; v.id = "viewer";
+  const when = m.mtime ? new Date(m.mtime*1000).toLocaleString() : "";
+  const media = m.type==="video"
+    ? `<video controls autoplay playsinline src="${esc(m.url||"")}"></video>`
+    : `<img src="${esc(m.url||"")}" alt="">`;
+  v.innerHTML = `<div class="vmedia">${media}</div>
+    <div class="vbar">
+      <div class="vname">${esc(m.name)}</div>
+      <div class="vmeta">${esc(m.type)}${m.role_label ? " · " + esc(m.role_label) : ""}${when ? " · " + esc(when) : ""}${m.size ? " · " + esc(fmtBytes(m.size)) : ""}</div>
+      <div class="row">
+        <button class="bigbtn" id="v-use" style="margin:4px 0">🎬 Use in Create</button>
+        <a class="bigbtn ghost" id="v-dl" style="margin:4px 0;text-align:center;text-decoration:none;display:block" href="${esc(m.url||"")}" download>⬇ Download</a>
+      </div>
+      <div class="row">
+        <button class="bigbtn ghost" id="v-del" style="margin:4px 0;color:var(--err)">🗑️ Delete</button>
+        <button class="bigbtn ghost" id="v-close" style="margin:4px 0">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(v);
+  v.querySelector("#v-close").addEventListener("click", closeViewer);
+  v.querySelector(".vmedia").addEventListener("click", (e)=>{ if(e.target===e.currentTarget) closeViewer(); });
+  v.querySelector("#v-use").addEventListener("click", ()=>{
+    closeViewer(); selected = m; show("create"); renderEffects();
+  });
+  v.querySelector("#v-del").addEventListener("click", async ()=>{
+    if(!confirm(`Delete ${m.name}?`)) return;
+    closeViewer(); await deleteMedia([m.name]);
+  });
+}
+function closeViewer(){
+  const v = document.getElementById("viewer");
+  if(v) v.remove();
 }
 function toggleLibSelect(name){
   if(libSelected.has(name)) libSelected.delete(name); else libSelected.add(name);
@@ -583,6 +701,7 @@ function showMediaMenu(m){
   sheet.className = "action-sheet";
   sheet.innerHTML = `<div class="as-backdrop"></div><div class="as-menu">
     <div class="as-title">${esc(m.name)}</div>
+    <button class="as-item" data-act="view">👁 View</button>
     <button class="as-item" data-act="use">🎬 Use in Create</button>
     <button class="as-item danger" data-act="delete">🗑️ Delete</button>
     <button class="as-item" data-act="cancel">Cancel</button>
@@ -590,6 +709,9 @@ function showMediaMenu(m){
   document.body.appendChild(sheet);
   sheet.querySelector(".as-backdrop").addEventListener("click", ()=>sheet.remove());
   sheet.querySelector('[data-act="cancel"]').addEventListener("click", ()=>sheet.remove());
+  sheet.querySelector('[data-act="view"]').addEventListener("click", ()=>{
+    sheet.remove(); openViewer(m);
+  });
   sheet.querySelector('[data-act="use"]').addEventListener("click", ()=>{
     sheet.remove(); selected = m; show("create"); renderEffects();
   });
@@ -699,28 +821,83 @@ async function refreshJobs(){
       const st = j.status === "done" ? "✅" : (j.status === "failed" || j.status === "error") ? "❌" : "⏳";
       const prog = (j.status === "running" || j.status === "queued") ? " " + (j.progress||0) + "%" : "";
       const phase = j.phase ? " — " + esc(j.phase) : "";
-      const link = j.result_url ? ' <a href="' + esc(j.result_url) + '" style="color:var(--blue)">▶ view</a>' : "";
+      const link = (j.primary_url || j.result_url) ? ' <a href="' + esc(j.primary_url || j.result_url) + '" style="color:var(--blue)">▶ view</a>' : "";
       const err = j.error ? '<div class="err" style="margin-top:4px">' + esc(String(j.error).slice(0,200)) + "</div>" : "";
       const resume = (j.status === "running" || j.status === "queued") ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:8px" onclick="event.stopPropagation();pollJob(\'' + j.job_id + '\')">watch</button>' : "";
       const cancel = (j.status === "running" || j.status === "queued") ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:4px;color:var(--err)" onclick="event.stopPropagation();cancelJob(\'' + j.job_id + '\')">✕</button>' : "";
       const jid = esc(j.job_id);
       const detailId = "job-detail-" + jid;
-      const clipsBtn = (j.status === "running" || j.status === "queued" || j.status === "done") ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:4px" onclick="event.stopPropagation();previewClips(\'' + j.job_id + '\',\'' + detailId + '\')">🎬 clips</button>' : "";
+      const clipsBtn = (j.has_clips && (j.status === "running" || j.status === "queued" || j.status === "done")) ? ' <button class="chipbtn" style="padding:2px 8px;margin-left:4px" onclick="event.stopPropagation();previewClips(\'' + j.job_id + '\',\'' + detailId + '\')">🎬 clips</button>' : "";
       const bar = (j.status === "running" || j.status === "queued") ? '<div style="background:var(--card2);border-radius:6px;height:6px;margin-top:8px"><div style="background:var(--acc);height:6px;border-radius:6px;width:' + (j.progress||0) + '%"></div></div>' : "";
       const created = j.created ? new Date(j.created*1000).toLocaleString() : "";
       const elapsed = j.created ? fmtElapsed(Date.now()/1000 - j.created) : "";
       const detailHtml = '<div id="' + detailId + '" class="hidden" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);font-size:13px;color:var(--dim)">'
+        + '<div id="' + detailId + '-stages"></div>'
         + '<div><b style="color:var(--txt)">Job ID:</b> ' + jid + '</div>'
         + (j.phase ? '<div><b style="color:var(--txt)">Phase:</b> ' + esc(j.phase) + '</div>' : "")
         + '<div><b style="color:var(--txt)">Status:</b> ' + esc(j.status) + ' (' + (j.progress||0) + '%)</div>'
         + (created ? '<div><b style="color:var(--txt)">Started:</b> ' + esc(created) + ' (' + elapsed + ' ago)</div>' : "")
         + (j.error ? '<div style="margin-top:8px"><b style="color:var(--err)">Error:</b><div class="err" style="margin-top:4px;white-space:pre-wrap">' + esc(String(j.error)) + '</div></div>' : "")
-        + (j.result_url ? '<div style="margin-top:8px"><a href="' + esc(j.result_url) + '" style="color:var(--acc)">▶ View result</a></div>' : "")
+        + (j.primary_url || j.result_url ? '<div style="margin-top:8px"><a href="' + esc(j.primary_url || j.result_url) + '" style="color:var(--acc)">▶ View result</a></div>' : "")
         + '</div>';
-      return '<div class="card" style="margin-bottom:8px;padding:10px;display:block;cursor:pointer" onclick="document.getElementById(\'' + detailId + '\').classList.toggle(\'hidden\')">'
+      return '<div class="card" style="margin-bottom:8px;padding:10px;display:block;cursor:pointer" onclick="toggleJobDetail(\'' + j.job_id + '\',\'' + detailId + '\')">'
         + '<div>' + st + " <b>" + esc(j.name||j.kind) + "</b>" + prog + phase + link + resume + cancel + clipsBtn + "</div>" + bar + detailHtml + err + "</div>";
     }).join("");
   }catch(e){ el.innerHTML = '<div class="err">Failed to load jobs</div>'; }
+}
+function toggleJobDetail(jobId, detailId){
+  const detail = document.getElementById(detailId);
+  if(!detail) return;
+  const opening = detail.classList.contains("hidden");
+  detail.classList.toggle("hidden");
+  if(opening) loadJobStages(jobId, detailId + "-stages");
+}
+async function loadJobStages(jobId, wrapId){
+  const wrap = document.getElementById(wrapId);
+  if(!wrap || wrap.dataset.loaded) return;
+  wrap.dataset.loaded = "1";
+  wrap.innerHTML = '<div style="color:var(--dim);margin:6px 0">Loading result…</div>';
+  try{
+    const j = await api("/api/job/" + encodeURIComponent(jobId));
+    const dels = j.deliverables || [];
+    if(!dels.length){ wrap.innerHTML = ""; return; }
+    const prim = dels.find(d=>d.primary) || dels[0];
+    wrap.innerHTML = stagePlayerHtml(wrapId, prim)
+      + '<div style="margin-top:6px">'
+      + dels.map(d=>stageRowHtml(wrapId, d)).join("")
+      + "</div>"
+      + '<a class="bigbtn ghost" style="text-align:center;text-decoration:none;display:block;min-height:48px;padding:10px" href="' + esc(prim.url) + '" download>⬇ Download final</a>';
+  }catch(e){
+    wrap.innerHTML = '<div class="err">Could not load result: ' + esc(e.message) + "</div>";
+  }
+}
+function stagePlayerHtml(wrapId, d){
+  const id = wrapId + "-player";
+  if(d.kind === "video")
+    return '<video id="' + id + '" class="result-media" controls playsinline preload="metadata" src="' + esc(d.url) + '" style="margin:4px 0"></video>';
+  return '<img id="' + id + '" class="result-media" src="' + esc(d.url) + '" style="margin:4px 0">';
+}
+function stageRowHtml(wrapId, d){
+  return '<div class="stage-row' + (d.primary ? " on" : "") + '" onclick="setStage(\'' + wrapId + '\',this,\'' + esc(d.url) + '\',\'' + esc(d.kind) + '\')">'
+    + "<span>" + (d.kind === "video" ? "🎬" : "🖼") + "</span>"
+    + '<div style="flex:1;min-width:0"><div style="color:var(--txt);font-weight:600;font-size:14px">' + esc(d.label) + "</div>"
+    + '<div style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(d.name) + "</div></div>"
+    + (d.primary ? '<span class="badge free">Final</span>' : "")
+    + "</div>";
+}
+function setStage(wrapId, row, url, kind){
+  const wrap = document.getElementById(wrapId);
+  if(!wrap) return;
+  const player = document.getElementById(wrapId + "-player");
+  if(player){
+    const np = document.createElement(kind === "video" ? "video" : "img");
+    np.id = wrapId + "-player"; np.className = "result-media";
+    np.style.margin = "4px 0"; np.src = url;
+    if(kind === "video"){ np.controls = true; np.playsInline = true; np.preload = "metadata"; }
+    player.replaceWith(np);
+  }
+  wrap.querySelectorAll(".stage-row").forEach(r=>r.classList.remove("on"));
+  row.classList.add("on");
 }
 function pollJob(jobId){  clearInterval(pollTimer);
   const tick = async ()=>{
@@ -732,7 +909,9 @@ function pollJob(jobId){  clearInterval(pollTimer);
         $("#result-body").innerHTML =
           (isVid ? `<video class="result-media" controls src="${j.result_url}"></video>`
                  : `<img class="result-media" src="${j.result_url}">`) +
-          `<a class="bigbtn" style="text-align:center;text-decoration:none;display:block" href="${j.result_url}" download>⬇ Download</a>`;
+          `<a class="bigbtn" style="text-align:center;text-decoration:none;display:block" href="${j.result_url}" download>⬇ Download</a>`
+          + `<div id="result-stages"></div>`;
+        loadJobStages(jobId, "result-stages");
       }else if(j.status==="error"){
         clearInterval(pollTimer);
         $("#result-body").innerHTML = `<div class="err">${esc(j.error||"render failed")}</div>`;
@@ -1500,7 +1679,9 @@ pollJob = function(jobId){
         $("#result-body").innerHTML =
           (isVid ? `<video class="result-media" controls src="${j.result_url}"></video>`
                  : `<img class="result-media" src="${j.result_url}">`) +
-          `<a class="bigbtn" style="text-align:center;text-decoration:none;display:block" href="${j.result_url}" download>⬇ Download</a>`;
+          `<a class="bigbtn" style="text-align:center;text-decoration:none;display:block" href="${j.result_url}" download>⬇ Download</a>`
+          + `<div id="result-stages"></div>`;
+        loadJobStages(jobId, "result-stages");
       }else if(j.status==="error"){
         clearInterval(pollTimer);
         $("#result-body").innerHTML = `<div class="err">${esc(j.error||"render failed")}</div>`;
