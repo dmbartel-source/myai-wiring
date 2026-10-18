@@ -1100,9 +1100,21 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
             # Person LoRA (skswoman, trained on her own frames):
             # rides in sk so the single-pass AND chunked paths both
             # pick it up; the GAP call passes it by name below.
-            scail_person = (1.0 if p.get("person_lora")
-                            and p.get("person_lora")
-                            not in (False, 0, "false") else 0.0)
+            person_on = (bool(p.get("person_lora"))
+                         and p.get("person_lora")
+                         not in (False, 0, "false"))
+            scail_person = 0.0
+            if person_on:
+                # Ladder-2 probe (Oct 18): an explicit strength
+                # overrides the 1.0 default -- the trained LoRAs
+                # carry alpha 1 at dim 32, so a 3.0 run tests
+                # whether the alpha gate is what mutes them.
+                try:
+                    scail_person = float(
+                        p.get("person_lora_strength", 1.0))
+                except (TypeError, ValueError):
+                    scail_person = 1.0
+                scail_person = min(5.0, max(0.0, scail_person))
             sk["person_lora_strength"] = scail_person
             # Which trained LoRA the selector loads: "v1"/"v2" (or a
             # known filename); unknown/missing falls back to v1.
@@ -1124,6 +1136,31 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                 # GAP orchestrator: chunks internally over the
                 # full video in ONE workflow (no server chunk
                 # plan); the run timeout scales with length.
+                # Ladder-2 levers (Oct 18): the face close-up extra
+                # view (a crop of the SAME reference the Face Lock
+                # uses) and the fp16 DiT the person LoRAs were
+                # trained against -- both opt-in per job.
+                gap_closeup = ""
+                if (p.get("closeup")
+                        and p.get("closeup")
+                        not in (False, 0, "false")):
+                    try:
+                        import cv2 as _cv2
+                        import tempfile
+                        crop = _ref_face_crop(gpu_face_ref)
+                        fd, cpath = tempfile.mkstemp(suffix=".png")
+                        os.close(fd)
+                        try:
+                            _cv2.imwrite(cpath, crop)
+                            gap_closeup = gc.upload_image(cpath)
+                        finally:
+                            os.unlink(cpath)
+                    except Exception:
+                        gap_closeup = ""
+                gap_dit = ("wan2.1_14B_SCAIL_2_fp16.safetensors"
+                           if p.get("dit_fp16")
+                           not in (None, False, 0, "false")
+                           else None)
                 wf = gw.video_replace_model_scail_gap(
                     vup, iup, scail_prompt,
                     mask_prompt=(p.get("mask_prompt") or "person"),
@@ -1136,10 +1173,14 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                     shift=float(sk.get("shift", 3.0)),
                     lightx2v_strength=float(
                         sk.get("lightx2v_strength", 0.0)),
+                    composite=(p.get("composite", True)
+                               not in (False, 0, "false")),
                     composite_expand=int(sk.get("composite_expand", 16)),
                     composite_feather=int(sk.get("composite_feather", 8)),
                     gap_swap=bool(p.get("gap_swap")),
-                    zoned=bool(sk.get("zoned")),
+                    zoned=sk.get("zoned") not in (False, 0, "false"),
+                    closeup_image=gap_closeup,
+                    dit_file=gap_dit,
                     person_lora_strength=scail_person,
                     person_lora_file=sk["person_lora_file"],
                     cache_id=f"studio-{job_id}",
@@ -2403,7 +2444,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                   "partner_threshold", "engine", "ref_threshold",
                   "composite_expand", "composite_feather", "composite",
                   "seedvr2", "gap_swap", "person_lora",
-                  "person_lora_version")
+                  "person_lora_version", "zoned", "closeup",
+                  "person_lora_strength", "dit_fp16")
                  if k in raw}
         media = body.get("media") or ""
         params = {"prompt": prompt, **knobs}
