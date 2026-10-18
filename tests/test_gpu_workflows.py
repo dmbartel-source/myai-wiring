@@ -419,6 +419,21 @@ def test_video_replace_model_scail_no_composite():
     assert wf["29"]["inputs"]["images"] == ["35", 0]
 
 
+def test_video_replace_model_scail_specific_prompts():
+    # Pivot (Oct 18): single-target selection is by SAM3 text --
+    # specific hero/ref terms must land in the graph's text inputs
+    # (the generic "person" defaults were part of the fragility).
+    wf = gw.video_replace_model_scail(
+        "v.mp4", "r.jpg", mask_prompt="woman",
+        hero_prompt="woman with long dark hair",
+        ref_prompt="woman with long dark hair")
+    assert_links_valid(wf)
+    texts = [n["inputs"].get("text") for n in wf.values()
+             if isinstance(n.get("inputs"), dict)]
+    assert "woman with long dark hair" in texts
+    assert "woman" in texts
+
+
 def test_video_replace_model_scail_seedvr2_finish():
     plain = gw.video_replace_model_scail("v.mp4", "r.jpg", zoned=False)
     assert "62" not in plain
