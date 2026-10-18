@@ -48,12 +48,50 @@ _DNN_MODEL = os.path.join(MODELS_DIR, "res10_300x300_ssd_iter_140000.caffemodel"
 _DLIB_PREDICTOR = os.path.join(
     MODELS_DIR, "shape_predictor_68_face_landmarks.dat")
 
+_YUNET_MODEL = os.path.join(MODELS_DIR, "face_detection_yunet_2023mar.onnx")
+
 
 # --------------------------------------------------------------- detection ----
 
-def _detect_dnn(image: np.ndarray, conf: float = 0.5) -> List[Tuple[int, int, int, int]]:
-    """OpenCV DNN face detector (res10_300x300_ssd). Requires model files."""
+def _detect_yunet(image: np.ndarray, conf: float = 0.5) -> List[Tuple[int, int, int, int]]:
+    """YuNet (ONNX) face detector via cv2.FaceDetectorYN.
+
+    The detector OpenCV 5 supports: the Caffe importer was removed there,
+    so the res10 Caffe pair can no longer load. Requires the YuNet model.
+    """
     _require_cv2()
+    if not os.path.isfile(_YUNET_MODEL):
+        raise FileNotFoundError("YuNet face model not present; see download_models.py")
+    create = getattr(cv2, "FaceDetectorYN_create", None) or getattr(
+        cv2.FaceDetectorYN, "create", None)
+    if create is None:
+        raise RuntimeError("this OpenCV build has no FaceDetectorYN")
+    h, w = image.shape[:2]
+    det = create(_YUNET_MODEL, "", (w, h), conf, 0.3, 5000)
+    det.setInputSize((w, h))
+    _, faces = det.detect(image)
+    boxes: List[Tuple[int, int, int, int]] = []
+    if faces is not None:
+        for row in faces:
+            x, y, bw, bh = (int(round(float(v))) for v in row[:4])
+            x, y = max(0, x), max(0, y)
+            boxes.append((x, y, max(0, bw), max(0, bh)))
+    return boxes
+
+
+def _dnn_ready() -> bool:
+    """True when a DNN-class detector can actually run: YuNet ONNX present,
+    or the legacy Caffe pair present."""
+    return os.path.isfile(_YUNET_MODEL) or (
+        os.path.isfile(_DNN_PROTO) and os.path.isfile(_DNN_MODEL))
+
+
+def _detect_dnn(image: np.ndarray, conf: float = 0.5) -> List[Tuple[int, int, int, int]]:
+    """OpenCV DNN face detector. Prefers YuNet (ONNX); falls back to the
+    res10_300x300_ssd Caffe pair on OpenCV builds that still load Caffe."""
+    _require_cv2()
+    if os.path.isfile(_YUNET_MODEL):
+        return _detect_yunet(image, conf=conf)
     if not (os.path.isfile(_DNN_PROTO) and os.path.isfile(_DNN_MODEL)):
         raise FileNotFoundError("DNN face model not present; see download_models.py")
     read_net = getattr(cv2.dnn, "readNet", None) or getattr(
@@ -109,7 +147,7 @@ def detect_faces(image: np.ndarray, min_size: int = 60,
     _require_cv2()
     if method not in ("auto", "dnn", "haar"):
         raise ValueError(f"unknown method {method!r}")
-    dnn_ready = os.path.isfile(_DNN_PROTO) and os.path.isfile(_DNN_MODEL)
+    dnn_ready = _dnn_ready()
     if method == "dnn" or (method == "auto" and dnn_ready):
         try:
             return _detect_dnn(image)
@@ -121,7 +159,7 @@ def detect_faces(image: np.ndarray, min_size: int = 60,
 
 def detection_method() -> str:
     """Which detector detect_faces(method='auto') would use right now."""
-    dnn_ready = os.path.isfile(_DNN_PROTO) and os.path.isfile(_DNN_MODEL)
+    dnn_ready = _dnn_ready()
     return "dnn" if dnn_ready else "haar"
 
 
