@@ -49,41 +49,38 @@ git -C "$REPO" checkout -q "$LHMPP_SHA" || fail checkout
 [ "$(git -C "$REPO" rev-parse HEAD)" = "$LHMPP_SHA" ] || fail checkout-verify
 stage clone
 
-# ---- Stage 2: python 3.10 venv + deps ------------------------------------
-# A venv counts only if its python AND pip actually run (a failed
-# ensurepip creation leaves a stub directory that must be cleared).
-if ! "$VENV/bin/python" -m pip --version >/dev/null 2>&1; then
+# ---- Stage 2: python 3.10 venv + deps (uv end-to-end) -------------------
+# uv performs every install via --python, so the venv never needs its own
+# pip (uv venvs ship without one - that is what killed v1-v3).
+export PATH="$HOME/.local/bin:$PATH"
+if ! command -v uv >/dev/null 2>&1; then
+  python3 -m pip install --user -q uv || fail uv-install
+fi
+# A venv counts only if a python 3.10 actually runs from it.
+if ! "$VENV/bin/python" -c "import sys; assert sys.version_info[:2] == (3, 10)" >/dev/null 2>&1; then
   rm -rf "$VENV"
-  if command -v python3.10 >/dev/null 2>&1; then
-    python3.10 -m venv "$VENV" 2>/dev/null || true
-  fi
-  if ! "$VENV/bin/python" -m pip --version >/dev/null 2>&1; then
-    rm -rf "$VENV"
-    python3 -m pip install --user -q uv || fail uv-install
-    export PATH="$HOME/.local/bin:$PATH"
-    uv python install 3.10 || fail uv-python
-    uv venv --clear --python 3.10 "$VENV" || fail venv
-  fi
+  uv python install 3.10 || fail uv-python
+  uv venv --seed --clear --python 3.10 "$VENV" || fail venv
 fi
 PY="$VENV/bin/python"
-"$PY" -m pip install -q -U pip setuptools wheel || fail pip-seed
+PIP() { uv pip install --python "$PY" "$@"; }
+export TORCH_CUDA_ARCH_LIST="9.0"
 if ! "$PY" -c "import torch, pytorch3d, pointops, gsplat, spconv, torch_scatter, xformers" 2>/dev/null; then
-  "$PY" -m pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https://download.pytorch.org/whl/cu121 || fail torch
-  "$PY" -m pip install -U xformers==0.0.26.post1 --index-url https://download.pytorch.org/whl/cu121 || fail xformers
-  (cd "$REPO" && "$PY" -m pip install -r requirements.txt) || fail requirements
-  "$PY" -m pip install "rembg[cpu]" modelscope || fail rembg
-  "$PY" -m pip install fvcore iopath || fail fvcore
-  "$PY" -m pip install --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt230/download.html || fail pytorch3d
-  "$PY" -m pip install spconv-cu121 || fail spconv
-  "$PY" -m pip install torch_scatter -f https://data.pyg.org/whl/torch-2.3.0+cu121.html || fail torch-scatter
-  "$PY" -m pip install git+https://github.com/ashawkey/diff-gaussian-rasterization/ || fail dgr
-  "$PY" -m pip install git+https://github.com/camenduru/simple-knn/ || fail simple-knn
-  "$PY" -m pip install gsplat==1.4.0 || fail gsplat
-  (cd "$REPO" && "$PY" -m pip install ./lib/pointops/) || (cd "$REPO/lib/pointops" && "$PY" setup.py install) || fail pointops
+  PIP torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https://download.pytorch.org/whl/cu121 || fail torch
+  PIP -U xformers==0.0.26.post1 --index-url https://download.pytorch.org/whl/cu121 || fail xformers
+  (cd "$REPO" && PIP -r requirements.txt) || fail requirements
+  PIP "rembg[cpu]" modelscope || fail rembg
+  PIP fvcore iopath || fail fvcore
+  PIP --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py310_cu121_pyt230/download.html || fail pytorch3d
+  PIP spconv-cu121 || fail spconv
+  PIP torch_scatter -f https://data.pyg.org/whl/torch-2.3.0+cu121.html || fail torch-scatter
+  PIP git+https://github.com/ashawkey/diff-gaussian-rasterization/ || fail dgr
+  PIP git+https://github.com/camenduru/simple-knn/ || fail simple-knn
+  PIP gsplat==1.4.0 || fail gsplat
+  (cd "$REPO" && PIP ./lib/pointops/) || (cd "$REPO/lib/pointops" && "$PY" setup.py install) || fail pointops
 fi
 "$PY" -c "import torch, pytorch3d, pointops, gsplat, spconv, torch_scatter, xformers; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))" || fail imports
 echo "BAKE-IMPORTS-OK"
-stage install
 
 # ---- Stage 3: weights + motion videos ------------------------------------
 cd "$REPO" || fail cd
