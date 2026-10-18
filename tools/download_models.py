@@ -8,7 +8,10 @@ on the VPS if you want the more accurate DNN detector and dlib's
     python3 tools/download_models.py
 
 Models (public research artifacts):
-  1. OpenCV DNN face detector (Caffe, ~100 MB):
+  0. YuNet face detector (ONNX, ~0.23 MB) - the detector face_vfx prefers;
+     the only DNN detector OpenCV 5 can load (Caffe importer removed).
+     sha256 8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4
+  1. OpenCV DNN face detector (Caffe, ~100 MB, legacy OpenCV < 5):
      prototxt: https://github.com/opencv/opencv/raw/master/samples/dnn/face_detector/deploy.prototxt
      caffemodel: https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel
   2. dlib 68-face-landmark shape predictor (bz2, ~100 MB download):
@@ -29,8 +32,11 @@ MODELS_DIR = os.environ.get(
     "MYAI_MODELS_DIR", os.path.join(os.path.expanduser("~"), ".myai", "models"))
 
 FILES = [
+    ("face_detection_yunet_2023mar.onnx",
+     "https://github.com/opencv/opencv_zoo/raw/47534e27c9851bb1128ccc0102f1145e27f23f98/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+     False),
     ("deploy.prototxt",
-     "https://github.com/opencv/opencv/raw/master/samples/dnn/face_detector/deploy.prototxt",
+     "https://github.com/opencv/opencv/raw/4.10.0/samples/dnn/face_detector/deploy.prototxt",
      False),
     ("res10_300x300_ssd_iter_140000.caffemodel",
      "https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel",
