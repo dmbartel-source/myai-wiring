@@ -2036,6 +2036,9 @@ class StudioHandler(BaseHTTPRequestHandler):
             self._serve_static_file("icon-512.png", "image/png")
         elif path == "/apple-touch-icon.png":
             self._serve_static_file("apple-touch-icon.png", "image/png")
+        elif path == "/viewer3d":
+            self._serve_static_file("splat_viewer.html",
+                                    "text/html; charset=utf-8")
         elif path == "/api/media":
             self._api_media()
         elif path == "/api/effects":
@@ -2109,6 +2112,7 @@ class StudioHandler(BaseHTTPRequestHandler):
         "icon-192.png": "image/png",
         "icon-512.png": "image/png",
         "apple-touch-icon.png": "image/png",
+        "splat_viewer.html": "text/html; charset=utf-8",
     }
 
     def _serve_static_file(self, name: str, ctype: str):
