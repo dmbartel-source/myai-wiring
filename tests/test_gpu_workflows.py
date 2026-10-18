@@ -540,3 +540,28 @@ def test_video_seedvr2_upscale_graph():
     assert wf["4"]["inputs"]["resolution"] == 720
     assert wf["5"]["inputs"]["images"] == ["4", 0]
     assert wf["5"]["inputs"]["frame_rate"] == 24.0
+
+
+def test_video_replace_model_scail_gap_closeup_extra_view():
+    wf = gw.video_replace_model_scail_gap("v.mp4", "r.jpg",
+                                          closeup_image="closeup.jpg")
+    assert_links_valid(wf)
+    assert wf["65"]["class_type"] == "LoadImage"
+    assert wf["65"]["inputs"]["image"] == "closeup.jpg"
+    assert wf["68"]["class_type"] == "GAPCharacterExtraView"
+    assert wf["68"]["inputs"]["character"] == 1
+    assert wf["68"]["inputs"]["reference_image"] == ["70", 0]
+    assert wf["68"]["inputs"]["mask"] == ["67", 0]
+    # The orchestrator consumes the extended reference batch; CLIP
+    # vision still encodes the primary composite.
+    assert wf["71"]["inputs"]["reference_image"] == ["68", 0]
+    assert wf["71"]["inputs"]["reference_image_mask"] == ["68", 1]
+    assert wf["19"]["inputs"]["image"] == ["70", 2]
+
+
+def test_video_replace_model_scail_gap_closeup_follows_swap():
+    wf = gw.video_replace_model_scail_gap("v.mp4", "r.jpg", gap_swap=True,
+                                          closeup_image="closeup.jpg")
+    assert_links_valid(wf)
+    # With the slots flipped, her close-up belongs to slot 2.
+    assert wf["68"]["inputs"]["character"] == 2
