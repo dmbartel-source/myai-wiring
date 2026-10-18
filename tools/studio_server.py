@@ -240,6 +240,47 @@ def job_has_clips(job_id: str) -> bool:
         return False
 
 
+# Keys from a job's params that the jobs list may show (Stage 2 job
+# clarity). Internal routing keys (media_name, beats, hero/ref prompts…)
+# stay out of the list payload.
+_JOB_LIST_PARAM_KEYS = (
+    "prompt", "engine", "model", "mode", "duration_s", "quality",
+    "resolution", "target_duration_s", "clip_duration_s", "n_clips",
+    "chain_mode", "chain_model", "face_lock", "composite", "seedvr2",
+    "gap_swap", "zoned", "closeup", "dit_fp16", "person_lora",
+    "person_lora_version", "person_lora_strength", "seed", "steps",
+    "cfg", "width", "height", "frames", "fps", "denoise", "ref_media",
+    "ref_media_names", "reference_media", "ref_image", "ref_video",
+    "media2", "start", "end", "factor", "preset", "angle", "filter",
+    "amount", "timestamp", "overlap_s",
+)
+
+
+def job_list_params(params) -> dict:
+    """Whitelisted, list-safe view of a job's params (Stage 2).
+
+    Scalars pass through (strings truncated); lists of scalars pass
+    through; anything else (dicts, nested beats…) is dropped.
+    """
+    if not isinstance(params, dict):
+        return {}
+    out = {}
+    for k in _JOB_LIST_PARAM_KEYS:
+        if k not in params:
+            continue
+        v = params[k]
+        if isinstance(v, bool) or isinstance(v, (int, float)):
+            out[k] = v
+        elif isinstance(v, str):
+            out[k] = v[:300]
+        elif isinstance(v, list):
+            items = [x for x in v
+                     if isinstance(x, (str, int, float, bool))]
+            if items:
+                out[k] = items[:12]
+    return out
+
+
 def _media_roles() -> dict:
     """Optional filename -> {role, label} map for the Library.
 
@@ -2248,9 +2289,10 @@ class StudioHandler(BaseHTTPRequestHandler):
         with JOBS._lock:
             jobs = sorted(JOBS._jobs.values(),
                           key=lambda j: j.get("created", 0), reverse=True)
-            # Strip params to keep it light; keep status info. Primary
-            # fields point at the file the job should present as its
-            # result (a later post-step final outranks the raw render).
+            # Params are exposed only as a whitelisted subset (media +
+            # clarity keys) to keep the list light. Primary fields point
+            # at the file the job should present as its result (a later
+            # post-step final outranks the raw render).
             out = []
             for j in jobs[:20]:
                 entry = {
@@ -2260,6 +2302,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                     "result_url": j["result_url"],
                     "result_name": j["result_name"], "error": j["error"],
                     "created": j["created"],
+                    "media": j.get("media"),
+                    "params": job_list_params(j.get("params")),
                     "has_clips": job_has_clips(j["job_id"]),
                 }
                 entry.update(job_primary(j["job_id"], j["result_name"],
