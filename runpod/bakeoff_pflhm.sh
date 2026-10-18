@@ -12,6 +12,11 @@
 # failed weights-missing after a successful download); motion picked by
 # the vendor contract (case dir + smplx_params); bake output copied from
 # the vendor's fixed name output.mp4 (no newest-file guessing).
+# v10: v9 reached the first bake and died at the first rasterization —
+# gsplat JIT-compiles its CUDA extension at first use and torch looks up
+# `ninja` on PATH, which lacked the venv bin. v10 puts $VENV/bin on PATH,
+# installs ninja unconditionally, and forces the JIT build in stage 2
+# (BAKE-JIT-OK) so a toolchain gap fails before the bakes, not inside one.
 # Inputs arrive via ComfyUI/input/bakeoff/set{1,8,16}/ (uploaded through
 # the ComfyUI API while this script installs). Idempotent: re-running
 # skips stages whose outputs already exist.
@@ -74,9 +79,17 @@ if ! "$VENV/bin/python" -c "import sys; assert sys.version_info[:2] == (3, 10)" 
   uv venv --seed --clear --python 3.10 "$VENV" || fail venv
 fi
 PY="$VENV/bin/python"
+# The venv's bin must be on PATH for subprocesses the vendor code spawns:
+# gsplat JIT-compiles its CUDA extension at first rasterization and
+# torch's cpp_extension looks up `ninja` on PATH (v9 died there:
+# RuntimeError: Ninja is required to load C++ extensions).
+export PATH="$VENV/bin:$PATH"
 PIP() { uv pip install --python "$PY" "$@"; }
 PIPB() { uv pip install --python "$PY" --no-build-isolation "$@"; }
 PIP pip setuptools wheel || fail seed-tools
+# ninja unconditionally (not only inside the install block): gsplat needs
+# it at RUNTIME for its JIT build, long after installs are skipped.
+PIP ninja || fail seed-ninja
 export TORCH_CUDA_ARCH_LIST="9.0"
 if ! "$PY" -c "import torch, pytorch3d, pointops, gsplat, spconv, torch_scatter, xformers" 2>/dev/null; then
   PIP torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 --index-url https://download.pytorch.org/whl/cu121 || fail torch
@@ -99,6 +112,11 @@ if ! "$PY" -c "import torch, pytorch3d, pointops, gsplat, spconv, torch_scatter,
 fi
 "$PY" -c "import torch, pytorch3d, pointops, gsplat, spconv, torch_scatter, xformers; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))" || fail imports
 echo "BAKE-IMPORTS-OK"
+# Runtime-build pre-flight: importing gsplat's CUDA backend forces its
+# JIT compile NOW (ninja + nvcc + g++), so a toolchain gap fails in
+# stage 2 instead of mid-bake (the v9 bake-set1 failure).
+"$PY" -c "import gsplat.cuda._backend; print('gsplat JIT backend OK')" || fail gsplat-jit
+echo "BAKE-JIT-OK"
 
 # ---- Stage 3: weights + motion videos ------------------------------------
 cd "$REPO" || fail cd
