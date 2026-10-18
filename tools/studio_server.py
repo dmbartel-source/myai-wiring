@@ -1093,6 +1093,10 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                             and p.get("person_lora")
                             not in (False, 0, "false") else 0.0)
             sk["person_lora_strength"] = scail_person
+            # Which trained LoRA the selector loads: "v1"/"v2" (or a
+            # known filename); unknown/missing falls back to v1.
+            sk["person_lora_file"] = gw.person_lora_filename(
+                p.get("person_lora_version"))
             # The prompt must describe the post-replacement scene
             # with BOTH people and their interaction (official
             # SCAIL-2 prompt semantics); the shared default only
@@ -1126,6 +1130,7 @@ def _run_gpu_job(job_id: str, job: dict) -> None:
                     gap_swap=bool(p.get("gap_swap")),
                     zoned=bool(sk.get("zoned")),
                     person_lora_strength=scail_person,
+                    person_lora_file=sk["person_lora_file"],
                     cache_id=f"studio-{job_id}",
                     seedvr2_resolution=(1024 if scail_seedvr2 else 0))
                 gap_timeout = max(3600.0, total_frames * 4.0)
@@ -2378,7 +2383,8 @@ class StudioHandler(BaseHTTPRequestHandler):
                   "mask_threshold", "contact_reach", "contact_pad",
                   "partner_threshold", "engine", "ref_threshold",
                   "composite_expand", "composite_feather", "composite",
-                  "seedvr2", "gap_swap", "person_lora")
+                  "seedvr2", "gap_swap", "person_lora",
+                  "person_lora_version")
                  if k in raw}
         media = body.get("media") or ""
         params = {"prompt": prompt, **knobs}
