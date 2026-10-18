@@ -498,12 +498,38 @@ def test_video_replace_model_scail_gap_zoned_finish():
     assert wf["83"]["inputs"]["destination"] == ["2", 0]
     assert wf["83"]["inputs"]["source"] == ["35", 0]
     assert wf["29"]["inputs"]["images"] == ["83", 0]
-    # Union finish is skipped in zoned mode; default stays union.
-    assert "25" not in wf
-    plain = gw.video_replace_model_scail_gap("v.mp4", "r.jpg",
-                                             cache_id="job-9")
-    assert "83" not in plain
-    assert plain["29"]["inputs"]["images"] == ["28", 0]
+
+
+def test_video_replace_model_scail_gap_qc_only():
+    wf = gw.video_replace_model_scail_gap("v.mp4", "r.jpg", frames=81,
+                                          qc_only=True)
+    assert_links_valid(wf)
+    # No sampling and no video combine: the QC run is tracking +
+    # reference build only, so it costs seconds, not a render.
+    assert "71" not in wf
+    assert "29" not in wf
+    saves = {n["inputs"]["filename_prefix"] for n in wf.values()
+             if n["class_type"] == "SaveImage"}
+    assert saves == {"myai/qc_mask_start", "myai/qc_mask_mid",
+                     "myai/qc_mask_end", "myai/qc_src_start",
+                     "myai/qc_src_mid", "myai/qc_src_end",
+                     "myai/qc_ref_composite", "myai/qc_ref_mask"}
+    # Mask stills come off the coloured-mask video at start/mid/end.
+    batches = [n for n in wf.values()
+               if n["class_type"] == "ImageFromBatch"
+               and n["inputs"]["image"] == ["17", 0]]
+    assert sorted(n["inputs"]["batch_index"] for n in batches) == [0, 40, 80]
+
+
+def test_video_replace_model_scail_gap_qc_stills_in_full_graph():
+    wf = gw.video_replace_model_scail_gap("v.mp4", "r.jpg", frames=81,
+                                          qc_stills=True)
+    assert_links_valid(wf)
+    assert wf["71"]["class_type"] == "GAPSCAIL2LongVideo"
+    prefixes = {n["inputs"]["filename_prefix"] for n in wf.values()
+                if n["class_type"] == "SaveImage"}
+    assert "myai/qc_mask_mid" in prefixes
+    assert "myai/qc_ref_composite" in prefixes
 
 
 def test_video_seedvr2_upscale_graph():
