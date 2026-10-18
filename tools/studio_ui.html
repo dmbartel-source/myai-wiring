@@ -366,6 +366,13 @@ footer.hint{text-align:center; color:var(--faint); font-size:12.5px; padding:20p
         <span>🧬 Person LoRA — her trained identity model; turn off to compare the render without it</span>
       </label>
       <label style="display:flex;gap:10px;align-items:center;margin:10px 2px">
+        <span>LoRA version:</span>
+        <select id="gr-personlora-version" style="flex:1">
+          <option value="v1" selected>v1 — trained on generated stills</option>
+          <option value="v2">v2 — trained on real photos &amp; video frames</option>
+        </select>
+      </label>
+      <label style="display:flex;gap:10px;align-items:center;margin:10px 2px">
         <span>Engine:</span>
         <select id="gr-engine" style="flex:1">
           <option value="scail" selected>SCAIL-2 — newest end-to-end replacement (research pick)</option>
@@ -1320,7 +1327,7 @@ $("#gr-go").addEventListener("click", async ()=>{
   box.innerHTML = `<div class="spinner"></div>`;
   try{
     const payload = {id:"gpu_replace", prompt:($("#gr-prompt").value || "").trim(), media:grBase.name,
-      params:{face_lock: $("#gr-facelock").checked, engine: $("#gr-engine").value, seedvr2: $("#gr-seedvr2").checked, person_lora: $("#gr-personlora").checked},
+      params:{face_lock: $("#gr-facelock").checked, engine: $("#gr-engine").value, seedvr2: $("#gr-seedvr2").checked, person_lora: $("#gr-personlora").checked, person_lora_version: $("#gr-personlora-version").value},
       reference_images: grRefs.filter(m=>m.type==="image").map(m=>m.name),
       reference_videos: grRefs.filter(m=>m.type==="video").map(m=>m.name)};
     const r = await api("/api/generate", {method:"POST", headers:{"Content-Type":"application/json"},
