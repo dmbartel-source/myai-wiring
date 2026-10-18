@@ -359,6 +359,17 @@ def test_video_replace_model_scail_person_lora_chain():
     assert wf2["52"]["inputs"]["model"] == ["6", 0]
     assert wf2["52"]["inputs"]["strength_model"] == 0.7
     assert wf2["7"]["inputs"]["model"] == ["52", 0]
+    # v2 selectable by version key; resolver falls back to v1.
+    wf3 = gw.video_replace_model_scail("v.mp4", "r.jpg",
+                                       person_lora_strength=1.0,
+                                       person_lora_file="v2")
+    assert wf3["52"]["inputs"]["lora_name"] == "skswoman_v2.safetensors"
+    assert gw.person_lora_filename("v2") == "skswoman_v2.safetensors"
+    assert gw.person_lora_filename("skswoman_v2.safetensors") == \
+        "skswoman_v2.safetensors"
+    assert gw.person_lora_filename("v1") == "skswoman.safetensors"
+    assert gw.person_lora_filename("bogus") == "skswoman.safetensors"
+    assert gw.person_lora_filename(None) == "skswoman.safetensors"
 
 
 def test_video_replace_model_scail_gap_person_lora():
@@ -371,6 +382,12 @@ def test_video_replace_model_scail_gap_person_lora():
     off = gw.video_replace_model_scail_gap("v.mp4", "r.jpg",
                                            cache_id="job-9")
     assert "52" not in off
+    v2 = gw.video_replace_model_scail_gap(
+        "v.mp4", "r.jpg", cache_id="job-9", person_lora_strength=1.0,
+        person_lora_file="v2")
+    assert v2["52"]["inputs"]["lora_name"] == "skswoman_v2.safetensors"
+    assert v2["52"]["inputs"]["model"] == ["51", 0]
+    assert v2["7"]["inputs"]["model"] == ["52", 0]
 
 
 def test_video_replace_model_scail_continuation():
