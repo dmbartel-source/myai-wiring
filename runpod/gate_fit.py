@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# GATE-FIT-V1 — MYAI measured-body GATE TEST (plan: GATE_TEST_PLAN.md).
+# GATE-FIT-V2 — MYAI measured-body GATE TEST (plan: GATE_TEST_PLAN.md).
 # Question: can ONE shared SMPL-X shape + per-vertex offsets match the
 # silhouettes of 4 hero views (front/side/back/three-quarter) at once?
 # Stages: segment -> select (azimuth grid) -> fit (beta, then offsets)
@@ -143,6 +143,9 @@ def stage_segment(indir, outdir):
 
 def load_model(model_dir, device, num_betas=100):
     import torch, smplx
+    probe = os.path.join(model_dir, "smplx", "SMPLX_FEMALE.npz")
+    flat = os.path.join(model_dir, "SMPLX_FEMALE.npz")
+    assert os.path.exists(probe) or os.path.exists(flat),         f"SMPLX_FEMALE.npz not resolvable under {model_dir}"
     model = smplx.create(model_dir, model_type="smplx", gender="female",
                          num_betas=num_betas, use_pca=False,
                          ext="npz").to(device)
@@ -156,7 +159,15 @@ def find_smplx():
     for p in pats:
         hits += glob.glob(p, recursive=True)
     files = [h for h in hits if os.path.basename(h) == "SMPLX_FEMALE.npz"]
-    return os.path.dirname(files[0]) if files else None
+    if not files:
+        return None
+    d = os.path.dirname(files[0])
+    # smplx.create() appends the model-type folder itself: it must be
+    # given the PARENT of the "smplx" folder, not the folder itself
+    # (V1 bug: returned the inner folder -> "<dir>/smplx/smplx" assert).
+    if os.path.basename(d) == "smplx":
+        return os.path.dirname(d)
+    return d
 
 # ---------------- rendering + fitting (torch) ----------------
 
