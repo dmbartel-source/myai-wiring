@@ -1,5 +1,5 @@
 #!/bin/bash
-# STAGE1-LAUNCH-V4 — stage-1 session launcher (runs DETACHED on the pod).
+# STAGE1-LAUNCH-V5 — stage-1 session launcher (runs DETACHED on the pod).
 # Chain: fetch pinned files -> marker greps -> rtmlib install ->
 # keypoint extraction -> SYNTH GATE (known-body recovery; tolerances
 # below) -> setsid-launch stage1_session.sh. Any failed gate stops the
@@ -10,16 +10,16 @@ LOG=/workspace/stage1_launch.log
 ( while :; do cp -f "$LOG" /workspace/ComfyUI/output/stage1_launch_log_copy.txt 2>/dev/null; sleep 20; done ) &
 MIRROR_PID=$!
 trap 'kill $MIRROR_PID 2>/dev/null' EXIT
-echo "STAGE1-LAUNCH-V4 starting $(date -u)"
+echo "STAGE1-LAUNCH-V5 starting $(date -u)"
 R=https://raw.githubusercontent.com/dmbartel-source/myai-wiring
 dl() { curl -fsSL "$R/$1/runpod/$2" -o "/workspace/$2" || { echo "LAUNCH-FAIL fetch $2"; exit 1; }; }
-dl ab3c9f85a88175acf912b889f1cf73e6b0a292d8 stage1_fit.py
+dl f197ad403ac2b31405f0ccc57f690ea08dc050b9 stage1_fit.py
 dl 885cc23d1fd28bd6facba5ca6c6ac33e2d1b5661 stage1_session.sh
 dl c05725dad25962a1fad90bc509041a2d9418969c extract_keypoints.py
 dl 7aad95e17262c1eea2626d927ca44df235bcfa3f view_manifest.json
 dl b7d154c94ff5f6d63980c63129ca55a2bc91db01 mesh_validate.py
 dl 096fbdc35ffb0334ba9058f805dd8cfba78d239e gate_fit.py
-for pair in "stage1_fit.py STAGE1-FIT-V2" "stage1_session.sh STAGE1-SESSION-V1" \
+for pair in "stage1_fit.py STAGE1-FIT-V3" "stage1_session.sh STAGE1-SESSION-V1" \
             "extract_keypoints.py EXTRACT-KEYPOINTS-V1" "view_manifest.json STAGE1-VIEW-MANIFEST-V1" \
             "mesh_validate.py MESH-VALIDATE-V1" "gate_fit.py GATE-FIT-V8"; do
   set -- $pair
@@ -62,7 +62,7 @@ SYNTH_MIRROR_PID=$!
   --manifest /workspace/view_manifest.json \
   --input /workspace/ComfyUI/input/stage1_views \
   --work /workspace/stage1 \
-  --validator /workspace/mesh_validate.py > /workspace/stage1_synth.log 2>&1
+  --synth-steps 300 --validator /workspace/mesh_validate.py > /workspace/stage1_synth.log 2>&1
 kill $SYNTH_MIRROR_PID 2>/dev/null
 cp -f /workspace/stage1_synth.log /workspace/ComfyUI/output/stage1_synth_log_copy.txt 2>/dev/null
 REC=$(grep "SYNTH-RECOVERY" /workspace/stage1_synth.log | tail -1)
@@ -77,6 +77,9 @@ ok = beta <= 0.5 and rmse <= 20.0 and (chest == "None" or float(chest) <= 2.0)
 print(f"SYNTH-GATE {'PASS' if ok else 'FAIL'} beta={beta} rmse_mm={rmse} chest_cm={chest}")
 sys.exit(0 if ok else 1)
 PY
+cp -f /workspace/stage1/synth_true.ply /workspace/ComfyUI/output/synth_true.ply 2>/dev/null
+cp -f /workspace/stage1/synth_recovered.ply /workspace/ComfyUI/output/synth_recovered.ply 2>/dev/null
+echo "SYNTH-PLY-COPIED to ComfyUI/output (synth_true.ply, synth_recovered.ply)"
 echo "== launching the stage-1 session (detached)"
 setsid nohup bash /workspace/stage1_session.sh > /workspace/stage1.log 2>&1 < /dev/null &
 echo "STAGE1-SESSION-LAUNCHED-DETACHED"
