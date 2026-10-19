@@ -1,5 +1,5 @@
 #!/bin/bash
-# STAGE1-LAUNCH-V2 — stage-1 session launcher (runs DETACHED on the pod).
+# STAGE1-LAUNCH-V3 — stage-1 session launcher (runs DETACHED on the pod).
 # Chain: fetch pinned files -> marker greps -> rtmlib install ->
 # keypoint extraction -> SYNTH GATE (known-body recovery; tolerances
 # below) -> setsid-launch stage1_session.sh. Any failed gate stops the
@@ -10,7 +10,7 @@ LOG=/workspace/stage1_launch.log
 ( while :; do cp -f "$LOG" /workspace/ComfyUI/output/stage1_launch_log_copy.txt 2>/dev/null; sleep 20; done ) &
 MIRROR_PID=$!
 trap 'kill $MIRROR_PID 2>/dev/null' EXIT
-echo "STAGE1-LAUNCH-V2 starting $(date -u)"
+echo "STAGE1-LAUNCH-V3 starting $(date -u)"
 R=https://raw.githubusercontent.com/dmbartel-source/myai-wiring
 dl() { curl -fsSL "$R/$1/runpod/$2" -o "/workspace/$2" || { echo "LAUNCH-FAIL fetch $2"; exit 1; }; }
 dl 1fd64227fb4b526fa4c48b5ccaac204ed67ec562 stage1_fit.py
@@ -48,15 +48,26 @@ NKP=$("$VENV/bin/python" -c "import json; print(len(json.load(open('/workspace/s
 echo "keypoints extracted for $NKP/39 views"
 if [ "$NKP" -lt 30 ]; then echo "LAUNCH-FAIL keypoints too sparse ($NKP/39) — fit would run weakened; stopping for review"; exit 1; fi
 if [ "$NKP" -lt 35 ]; then echo "KEYPOINTS-PARTIAL ($NKP/39) — proceeding, fit will report the gaps"; fi
+echo "== dependency preflight (the session's import list, checked early, plus scipy top-up)"
+"$VENV/bin/python" -c "import scipy" 2>/dev/null || uv pip install --python "$VENV/bin/python" scipy || "$VENV/bin/python" -m pip install -q scipy || true
+if "$VENV/bin/python" -c "import torch, pytorch3d, smplx, rembg, scipy, PIL, numpy; print('IMPORT-OK torch', torch.__version__, 'cuda', torch.cuda.is_available())"; then
+  echo "import path OK"
+else
+  echo "LAUNCH-FAIL dependency preflight: fit stack imports broken"; exit 1
+fi
 echo "== SYNTH GATE (known-body recovery before any real photo is fitted)"
+( while :; do cp -f /workspace/stage1_synth.log /workspace/ComfyUI/output/stage1_synth_log_copy.txt 2>/dev/null; sleep 15; done ) &
+SYNTH_MIRROR_PID=$!
 "$VENV/bin/python" -u /workspace/stage1_fit.py synth \
   --manifest /workspace/view_manifest.json \
   --input /workspace/ComfyUI/input/stage1_views \
   --work /workspace/stage1 \
   --validator /workspace/mesh_validate.py > /workspace/stage1_synth.log 2>&1
+kill $SYNTH_MIRROR_PID 2>/dev/null
+cp -f /workspace/stage1_synth.log /workspace/ComfyUI/output/stage1_synth_log_copy.txt 2>/dev/null
 REC=$(grep "SYNTH-RECOVERY" /workspace/stage1_synth.log | tail -1)
 echo "synth: $REC"
-[ -n "$REC" ] || { echo "SYNTH-GATE-FAIL: no recovery line (see stage1_synth.log)"; exit 1; }
+[ -n "$REC" ] || { echo "SYNTH-GATE-FAIL: no recovery line — synth log tail follows"; tail -60 /workspace/stage1_synth.log; exit 1; }
 "$VENV/bin/python" - "$REC" <<'PY' || { echo "SYNTH-GATE-FAIL: recovery outside tolerances (chest<=2.0cm, offset RMSE<=20mm, beta<=0.5) — session NOT started"; exit 1; }
 import re, sys
 m = re.search(r"beta max\|err\| ([\d.]+) \| offset RMSE ([\d.]+) mm \| chest circumference err ([\d.]+|None) cm", sys.argv[1])
