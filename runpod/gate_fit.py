@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# GATE-FIT-V3 — MYAI measured-body GATE TEST (plan: GATE_TEST_PLAN.md).
+# GATE-FIT-V4 — MYAI measured-body GATE TEST (plan: GATE_TEST_PLAN.md).
 # Question: can ONE shared SMPL-X shape + per-vertex offsets match the
 # silhouettes of 4 hero views (front/side/back/three-quarter) at once?
 # Stages: segment -> select (azimuth grid) -> fit (beta, then offsets)
@@ -128,8 +128,11 @@ def stage_segment(indir, outdir):
             pass
         frac = float(mask.mean())
         t, b = person_rows(mask)
-        Image.fromarray((mask * 255).astype(np.uint8)).save(
-            os.path.join(outdir, os.path.splitext(name)[0] + "_mask.png"))
+        dst = os.path.join(outdir, os.path.splitext(name)[0] + "_mask.png")
+        tmp = dst + ".tmp.png"
+        Image.fromarray((mask * 255).astype(np.uint8)).save(tmp)
+        Image.open(tmp).verify()
+        os.replace(tmp, dst)
         report[name] = {"mask_frac": frac, "person_px_h": int(b - t)}
         print(f"SEGMENT {name} frac={frac:.3f} person_h={b - t}px")
     json.dump(report, open(os.path.join(outdir, "segment_report.json"), "w"), indent=1)
@@ -420,7 +423,21 @@ def stage_run(indir, workdir):
         sys.exit(1)
     print(f"smplx model dir: {model_dir}", flush=True)
     maskdir = os.path.join(workdir, "masks")
-    stage_segment(indir, maskdir)
+    os.makedirs(maskdir, exist_ok=True)
+    from PIL import Image as _Im
+    def _ok(nm):
+        p = os.path.join(maskdir, os.path.splitext(nm)[0] + "_mask.png")
+        if not os.path.exists(p):
+            return False
+        try:
+            _Im.open(p).verify()
+            return True
+        except Exception:
+            return False
+    if all(_ok(nm) for nm in CANDIDATES):
+        print("MASKS-REUSED (all 7 verify from a previous run)", flush=True)
+    else:
+        stage_segment(indir, maskdir)
     model = load_model(model_dir, device)
     faces = model.faces_tensor.to(device)
     heroes_map = stage_select(model, faces, indir, maskdir, device)
