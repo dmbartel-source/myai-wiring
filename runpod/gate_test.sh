@@ -1,5 +1,5 @@
 #!/bin/bash
-# GATE-TEST-V4 — MYAI measured-body gate test (plan GATE_TEST_PLAN.md).
+# GATE-TEST-V5 — MYAI measured-body gate test (plan GATE_TEST_PLAN.md).
 # Builds a dedicated venv, proves every precondition, then runs
 # gate_fit.py: segment 7 generated-set candidates -> select 4 heroes
 # by measured azimuth -> joint SMPL-X silhouette fit (shared shape +
@@ -7,7 +7,7 @@
 # Run ON THE POD, detached:
 #   setsid nohup bash /workspace/gate_test.sh > /workspace/gate_test.log 2>&1 < /dev/null &
 set -u
-echo "GATE-TEST-V4 starting $(date -u)"
+echo "GATE-TEST-V5 starting $(date -u)"
 cd /workspace
 exec 9>/workspace/gate_test.lock
 if ! flock -n 9; then echo "GATE-ALREADY-RUNNING (lock held) — this launch exits"; exit 0; fi
@@ -26,8 +26,8 @@ FREE_GB=$(df -BG /workspace | tail -1 | awk '{print $4}' | tr -d 'G')
 echo "volume free: ${FREE_GB}G"
 if [ "$FREE_GB" -lt 10 ]; then echo "GATE-FAIL preflight: <10G free"; exit 1; fi
 NT=$(ls "$IN" 2>/dev/null | wc -l)
-echo "candidates=$NT (expect 7)"
-if [ "$NT" -ne 7 ]; then echo "GATE-FAIL preflight: candidate uploads incomplete ($NT/7)"; exit 1; fi
+echo "candidates=$NT (expect 8)"
+if [ "$NT" -ne 8 ]; then echo "GATE-FAIL preflight: candidate uploads incomplete ($NT/7)"; exit 1; fi
 if ! command -v uv > /dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
