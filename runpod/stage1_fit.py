@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# STAGE1-FIT-V9 — MYAI measured-body STAGE-1 scaffold fit.
+# STAGE1-FIT-V10 — MYAI measured-body STAGE-1 scaffold fit.
 # Implements STAGE1_FITTER_DESIGN.md (S0-S5) on top of the GATE-FIT-V8
 # machinery (gate_fit.py is imported lazily and NEVER modified):
 #   S0 ingest: manifest-driven views, gate-proven mask prep, keypoints
@@ -43,7 +43,7 @@
 # selftest` runs on plain CPU python (no CUDA, no smplx, no torch).
 import argparse, json, math, os, sys
 
-MARKER = "STAGE1-FIT-V9"
+MARKER = "STAGE1-FIT-V10"
 HEIGHT_M_DEFAULT = 1.6256          # David-supplied (5 ft 4 in), Oct 18, 2026
 GMOF_RHO = 100.0                   # SMPLify-X lineage (design: Values)
 OFFSET_CLAMP_M = 0.15              # design hard clamp on scalar offsets
@@ -1528,7 +1528,7 @@ def compute_coverage(model, faces, state, views, device):
     return conf
 
 def fit_offsets(model, faces, state, views, device, conf, steps=600):
-    """S4 (V9): GATE-FAITHFUL offsets. V8's scalar-along-normals
+    """S4 (V10): GATE-EXACT offsets. V8's scalar-along-normals
     field with everything else frozen was measured broken three
     ways (Oct 19, 2026 probes on pod): production synth abort
     (data term 1.73 -> 3.42 at step 50, sigma 1e-7); probe at
@@ -1554,9 +1554,20 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
     this start-state family (probe A1 jumped +10% by step 25
     then plateaued — a stall, not a runaway); V9's abort is a
     pure runaway guard: step >= 100 and data > 1.5x data0.
-    Optional normals/pointmap evidence terms (weight 1.0 when
-    sidecars exist) remain in the optimized loss; they never
-    enter the restore/abort data term."""
+    V10 (Oct 19, 2026 re-derivation, two-failure stop rule):
+    V9 carried two terms the gate unit never had and both are
+    REMOVED: the keypoint polish term (0.25 x GMoF at rho=100
+    saturates, so it shoves poses early then lets go; trial
+    totals ballooned 4.5 -> 44-70 while the silhouette term
+    improved) and the pose L2 prior (gate applies it only in
+    its beta phase). Keypoints keep their job in PV. The
+    normals/pointmap hooks are removed too (no sidecars exist;
+    they return when real evidence sidecars do). The restore
+    judge is now the CALIBRATED sharp gauge: checkpoints are
+    scored by the data term at sigma=1e-7 (probe_sigma3:
+    truth is the strict maximum there), while the optimized
+    loss keeps the gate-proven sigma=1e-4. Every loss
+    component is logged by name every 25 steps."""
     import torch, numpy as np
     G = gate()
     from pytorch3d.loss import mesh_laplacian_smoothing
@@ -1591,7 +1602,7 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
                     body_pose=poses[v["idx"]], return_verts=True)
         return out, v
 
-    def data_term():
+    def data_term(sigma=OFFSETS_SIGMA):
         tot = 0.0
         for i in range(len(kept)):
             out, v = forward(i)
@@ -1600,7 +1611,7 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
             alpha = render_alpha_fov(verts[0], faces, v["azim"],
                                      device, dtx=cam[0], dty=cam[1],
                                      scale=cam[2], fov=v["fov"],
-                                     sigma=OFFSETS_SIGMA)
+                                     sigma=sigma)
             tot = tot + (1 - G.soft_iou(alpha, targets[v["idx"]]))
         return tot
 
@@ -1621,22 +1632,24 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
                 cams[k].copy_(t)
 
     best = (float("inf"), -1, None)
-    data0 = None
+    judge0 = None
+    judge_sigma = 1e-7
     for step in range(steps):
         if step % 25 == 0:
             with torch.no_grad():
-                dv = float(data_term())
-            if data0 is None:
-                data0 = dv
-            if dv < best[0]:
-                best = (dv, step, snapshot())
-            if step >= 100 and dv > data0 * 1.5:
+                jv = float(data_term(sigma=judge_sigma))
+            if judge0 is None:
+                judge0 = jv
+            if jv < best[0]:
+                best = (jv, step, snapshot())
+            if step >= 100 and jv > judge0 * 1.5:
                 msg = (f"LOSS-RISE-ABORT stage=S4 step={step} "
-                       f"loss0={data0:.4f} loss={dv:.4f}")
+                       f"judge0={judge0:.4f} judge={jv:.4f}")
                 print(msg, flush=True)
                 raise RuntimeError(msg)
         opt.zero_grad()
         loss = 0.0
+        data_sum = 0.0
         first_verts = None
         for i in range(len(kept)):
             out, v = forward(i)
@@ -1648,27 +1661,14 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
                                      device, dtx=cam[0], dty=cam[1],
                                      scale=cam[2], fov=v["fov"],
                                      sigma=OFFSETS_SIGMA)
-            loss = loss + (1 - G.soft_iou(alpha, targets[v["idx"]]))
-            loss = loss + 0.02 * (poses[v["idx"]] ** 2).mean()
-            vv = dict(v)
-            vv["_cam"] = cam
-            vv["_g"] = g
-            if v.get("keypoints") is not None:
-                kt = keypoint_term(out.joints, vv, device, g)
-                if kt is not None:
-                    loss = loss + 0.25 * kt[1]
-            if "normals" in v:
-                nt = normals_term(verts[0], faces, vv, device)
-                if nt is not None:
-                    loss = loss + 1.0 * nt[1]
-            if "pointmaps" in v:
-                pt = pointmap_term(verts[0], faces, vv, device)
-                if pt is not None:
-                    loss = loss + 1.0 * pt[1]
+            d_i = (1 - G.soft_iou(alpha, targets[v["idx"]]))
+            data_sum = data_sum + d_i
+            loss = loss + d_i
         mesh0 = Meshes(verts=[first_verts[0]], faces=[faces])
         lap_w = 2.0 if step < int(steps * 0.6) else 0.5
-        loss = loss + lap_w * mesh_laplacian_smoothing(mesh0) \
-            + 0.5 * (off ** 2).mean()
+        lap_val = mesh_laplacian_smoothing(mesh0)
+        mag_val = 0.5 * (off ** 2).mean()
+        loss = loss + lap_w * lap_val + mag_val
         loss.backward()
         opt.step()
         with torch.no_grad():
@@ -1678,19 +1678,22 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
                 c[0] = c[0].clamp(-1.0, 1.0)
                 c[1] = c[1].clamp(-1.0, 1.0)
                 c[2] = c[2].clamp(0.65, 1.6)
-        if step % 100 == 0:
+        if step % 25 == 0:
             om = off.detach().norm(dim=2)
             print(f"  S4 step {step} loss {float(loss):.4f} "
+                  f"data {float(data_sum):.4f} "
+                  f"lap {float(lap_val):.4f} "
+                  f"mag {float(mag_val):.4f} "
                   f"|off| mean {float(om.mean()):.4f} "
                   f"max {float(om.max()):.4f}", flush=True)
     with torch.no_grad():
-        dv = float(data_term())
-    if dv < best[0]:
-        best = (dv, steps, snapshot())
+        jv = float(data_term(sigma=judge_sigma))
+    if jv < best[0]:
+        best = (jv, steps, snapshot())
     if best[2] is not None:
         restore(best[2])
-    print(f"  S4-DONE best data term {best[0]:.4f} @step {best[1]} "
-          f"(best state restored)", flush=True)
+    print(f"  S4-DONE best judge term {best[0]:.4f} @step {best[1]} "
+          f"(judge sigma=1e-07; best state restored)", flush=True)
     state = dict(state)
     state["vector_offsets"] = off.detach()
     for key, src in (("poses", poses), ("orients", orients),
@@ -1878,7 +1881,8 @@ def print_guards():
           f"height-anchor={HEIGHT_M_DEFAULT}m "
           f"traj-monotone=on outlier(>{OUTLIER_SIGMA}sigma)=on "
           f"offset=freevec-posed clamp={OFFSET_CLAMP_M}m "
-          f"offsets=gate-faithful-polish offsets-sigma={OFFSETS_SIGMA:g} "
+          f"offsets=gate-exact offsets-sigma={OFFSETS_SIGMA:g} "
+          f"judge-sigma=1e-07 s4-keypoints=off "
           f"beta-clamp={BETA_CLAMP} silhouette-sigma={SILHOUETTE_SIGMA:g} "
           f"validator=on loss-rise-abort=on", flush=True)
 
