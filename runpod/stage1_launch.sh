@@ -1,5 +1,5 @@
 #!/bin/bash
-# STAGE1-LAUNCH-V1 — stage-1 session launcher (runs DETACHED on the pod).
+# STAGE1-LAUNCH-V2 — stage-1 session launcher (runs DETACHED on the pod).
 # Chain: fetch pinned files -> marker greps -> rtmlib install ->
 # keypoint extraction -> SYNTH GATE (known-body recovery; tolerances
 # below) -> setsid-launch stage1_session.sh. Any failed gate stops the
@@ -10,7 +10,7 @@ LOG=/workspace/stage1_launch.log
 ( while :; do cp -f "$LOG" /workspace/ComfyUI/output/stage1_launch_log_copy.txt 2>/dev/null; sleep 20; done ) &
 MIRROR_PID=$!
 trap 'kill $MIRROR_PID 2>/dev/null' EXIT
-echo "STAGE1-LAUNCH-V1 starting $(date -u)"
+echo "STAGE1-LAUNCH-V2 starting $(date -u)"
 R=https://raw.githubusercontent.com/dmbartel-source/myai-wiring
 dl() { curl -fsSL "$R/$1/runpod/$2" -o "/workspace/$2" || { echo "LAUNCH-FAIL fetch $2"; exit 1; }; }
 dl 1fd64227fb4b526fa4c48b5ccaac204ed67ec562 stage1_fit.py
@@ -39,7 +39,7 @@ else
   "$VENV/bin/python" -m ensurepip --upgrade >/dev/null 2>&1
   "$VENV/bin/python" -m pip install -q rtmlib && echo "RTMLIB-INSTALL-VIA ensurepip+pip"
 fi
-"$VENV/bin/python" -c "import rtmlib; print('RTMLIB-OK', rtmlib.__version__)" || { echo "LAUNCH-FAIL rtmlib unusable"; exit 1; }
+"$VENV/bin/python" -c "import importlib.metadata as md; from rtmlib import Body; print('RTMLIB-OK', md.version('rtmlib'))" || { echo "LAUNCH-FAIL rtmlib unusable"; exit 1; }
 echo "== keypoint extraction"
 "$VENV/bin/python" -u /workspace/extract_keypoints.py \
   --input /workspace/ComfyUI/input/stage1_views \
