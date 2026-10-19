@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# STAGE1-FIT-V8 — MYAI measured-body STAGE-1 scaffold fit.
+# STAGE1-FIT-V9 — MYAI measured-body STAGE-1 scaffold fit.
 # Implements STAGE1_FITTER_DESIGN.md (S0-S5) on top of the GATE-FIT-V8
 # machinery (gate_fit.py is imported lazily and NEVER modified):
 #   S0 ingest: manifest-driven views, gate-proven mask prep, keypoints
@@ -43,7 +43,7 @@
 # selftest` runs on plain CPU python (no CUDA, no smplx, no torch).
 import argparse, json, math, os, sys
 
-MARKER = "STAGE1-FIT-V8"
+MARKER = "STAGE1-FIT-V9"
 HEIGHT_M_DEFAULT = 1.6256          # David-supplied (5 ft 4 in), Oct 18, 2026
 GMOF_RHO = 100.0                   # SMPLify-X lineage (design: Values)
 OFFSET_CLAMP_M = 0.15              # design hard clamp on scalar offsets
@@ -54,6 +54,10 @@ RENDER_SIZE = 512
 RENDER_DIST = 3.2                  # gate-proven camera distance
 FOV_DEFAULT = 38.0                 # gate-proven field of view (deg)
 SILHOUETTE_SIGMA = 1e-7              # calibrated Oct 19, 2026 (pod probes
+OFFSETS_SIGMA = 1e-4                # S4 silhouette sigma: the gate-
+                                    # proven value for the offsets stage
+                                    # (Oct 19 probes: 1e-7 is calibrated for
+                                    # the low-dim stages only)
                                      # probe_sigma/2/3): at sigma=1e-4 the
                                      # soft-silhouette interior alpha caps
                                      # at ~0.51 against binary targets,
@@ -1524,39 +1528,35 @@ def compute_coverage(model, faces, state, views, device):
     return conf
 
 def fit_offsets(model, faces, state, views, device, conf, steps=600):
-    """S4 (V8): one canonical scalar field s (meters), applied along
-    the posed surface normal each view; exported along neutral
-    normals. The V7 internals were measured broken (Arm I,
-    Oct 19, 2026: from a PERFECT state — true betas/poses/cameras —
-    its loss still rose 0.9993 -> 1.2302 with the clamp saturated),
-    so this stage now mirrors the GATE-PROVEN offsets phase of
-    gate_fit.fit_shape: silhouette sum at weight 1.0 per view,
-    Laplacian smoothing on the first view's displaced posed mesh,
-    magnitude term 0.5 * mean(s^2), Adam lr 0.01 (the gate's offsets
-    lr), Laplacian weight annealed 2.0 -> 0.5 for the final 40%.
-    ADAPTATIONS from the gate pattern, each deliberate:
-    (a) the gate optimizes free 3-vector offsets; here the variable
-        is stage-1's canonical SCALAR field (free vectors were the
-        gate-export failure mode) — the Laplacian mesh is built
-        from verts displaced by s along the posed normals instead
-        of verts + free offsets;
-    (b) the gate's renders use its sigma=1e-4 default; here they
-        use the calibrated SILHOUETTE_SIGMA=1e-7;
-    (c) poses/orients/cameras are FROZEN here (the gate polishes
-        them at lr 0.003): per-view pose fitting is
-        fit_views_per_view's job (Arm H), and re-opening joint
-        drift inside S4 is the measured Arm G/I failure mode;
-    (d) stage-1's design guards stay: hard clamp +/-OFFSET_CLAMP_M
-        after every step, coverage <= 0.05 vertices frozen at 0;
-    (e) BEST-STATE RESTORE and the LOSS-RISE-ABORT invariant are
-        evaluated on the PURE SILHOUETTE DATA TERM (sum of
-        1 - soft_iou over kept views; no regularizers, no evidence
-        terms), checkpointed every 25 steps, so regularizer
-        annealing can neither trip nor mask them (the V7 abort
-        fired on the total loss).
-    Optional normals/pointmap evidence terms (weight 1.0 when the
-    sidecars exist) remain in the optimized loss as in V7; they
-    never enter the restore/abort data term."""
+    """S4 (V9): GATE-FAITHFUL offsets. V8's scalar-along-normals
+    field with everything else frozen was measured broken three
+    ways (Oct 19, 2026 probes on pod): production synth abort
+    (data term 1.73 -> 3.42 at step 50, sigma 1e-7); probe at
+    sigma 1e-4 still rose (4.40 -> 4.81); probe S4B one-variable
+    arms from one PV state — scalar/frozen PLATEAUED at 4.85
+    (start 4.42), scalar+cam-polish DIVERGED to 5.85 (RMSE
+    58 mm), FREE-VECTOR/frozen DESCENDED 4.42 -> 4.00. The gate's
+    own offsets phase (gate_fit.fit_shape) descended steadily
+    (2.11 -> 0.82) with: free 3-vector offsets added to the posed
+    verts, poses/orients/cams co-polished at lr 0.003, sigma
+    1e-4, Laplacian anneal 2.0 -> 0.5, magnitude 0.5*mean(o^2),
+    1000 steps. V9 replicates that unit, keeping stage-1 guards
+    the gate lacked: betas FROZEN at the anchor; per-component
+    clamp +/-OFFSET_CLAMP_M after every step; coverage <= 0.05
+    vertices frozen at 0; cam clamps (dtx/dty +/-1.0, scale
+    0.65-1.6); keypoint term at 0.25 during polish when a view
+    carries keypoints (our PV poses are keypoint-fitted; the
+    term keeps the polish honest to them); pose L2 prior 0.02.
+    BEST-STATE RESTORE on the pure silhouette data term
+    (sigma=OFFSETS_SIGMA), checkpointed every 25 steps over the
+    FULL polished state (offsets + poses + orients + cams). The
+    V8 LOSS-RISE-ABORT (+5% at step 50) was miscalibrated for
+    this start-state family (probe A1 jumped +10% by step 25
+    then plateaued — a stall, not a runaway); V9's abort is a
+    pure runaway guard: step >= 100 and data > 1.5x data0.
+    Optional normals/pointmap evidence terms (weight 1.0 when
+    sidecars exist) remain in the optimized loss; they never
+    enter the restore/abort data term."""
     import torch, numpy as np
     G = gate()
     from pytorch3d.loss import mesh_laplacian_smoothing
@@ -1565,39 +1565,60 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
     if not kept:
         print("STAGE1-FAIL S4: every view was dropped as an outlier")
         sys.exit(1)
-    s = torch.zeros(1, NUM_VERTS, 1, device=device, requires_grad=True)
     g = state["g_scale"]
     conf_t = torch.tensor(conf, device=device, dtype=torch.float32)
     frozen = conf_t <= 0.05
     targets = {v["idx"]: torch.tensor(v["mask512"].astype(np.float32),
                                       device=device) for v in kept}
-    opt = torch.optim.Adam([s], lr=0.01)
+    off = torch.zeros(1, NUM_VERTS, 3, device=device,
+                      requires_grad=True)
+    poses = {v["idx"]: state["poses"][v["idx"]].detach().clone()
+             .requires_grad_(True) for v in kept}
+    orients = {v["idx"]: state["orients"][v["idx"]].detach().clone()
+               .requires_grad_(True) for v in kept}
+    cams = {v["idx"]: state["cams"][v["idx"]].detach().clone()
+            .requires_grad_(True) for v in kept}
+    opt = torch.optim.Adam(
+        [{"params": [off], "lr": 0.01},
+         {"params": list(poses.values()) + list(orients.values()),
+          "lr": 0.003},
+         {"params": list(cams.values()), "lr": 0.003}])
 
-    def displaced(i):
-        """Kept-view i's posed, offset-displaced verts (metric
-        scale, offsets along the posed surface normals)."""
+    def forward(i):
         v = kept[i]
-        vi = v["idx"]
         out = model(betas=state["betas"],
-                    global_orient=state["orients"][vi],
-                    body_pose=state["poses"][vi], return_verts=True)
-        posed = out.vertices * g
-        mesh = Meshes(verts=[posed[0]], faces=[faces])
-        vn = mesh.verts_normals_packed().detach()
-        return (posed + s[0, :, 0].reshape(-1, 1)
-                * vn.reshape(-1, 3)), v
+                    global_orient=orients[v["idx"]],
+                    body_pose=poses[v["idx"]], return_verts=True)
+        return out, v
 
     def data_term():
         tot = 0.0
         for i in range(len(kept)):
-            verts, v = displaced(i)
-            cam = state["cams"][v["idx"]]
+            out, v = forward(i)
+            verts = out.vertices * g + off
+            cam = cams[v["idx"]]
             alpha = render_alpha_fov(verts[0], faces, v["azim"],
                                      device, dtx=cam[0], dty=cam[1],
                                      scale=cam[2], fov=v["fov"],
-                                     sigma=SILHOUETTE_SIGMA)
+                                     sigma=OFFSETS_SIGMA)
             tot = tot + (1 - G.soft_iou(alpha, targets[v["idx"]]))
         return tot
+
+    def snapshot():
+        return (off.detach().clone(),
+                {k: t.detach().clone() for k, t in poses.items()},
+                {k: t.detach().clone() for k, t in orients.items()},
+                {k: t.detach().clone() for k, t in cams.items()})
+
+    def restore(snap):
+        with torch.no_grad():
+            off.copy_(snap[0])
+            for k, t in snap[1].items():
+                poses[k].copy_(t)
+            for k, t in snap[2].items():
+                orients[k].copy_(t)
+            for k, t in snap[3].items():
+                cams[k].copy_(t)
 
     best = (float("inf"), -1, None)
     data0 = None
@@ -1608,9 +1629,8 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
             if data0 is None:
                 data0 = dv
             if dv < best[0]:
-                best = (dv, step, s.detach().clone())
-            if step >= 50 and data0 is not None \
-                    and dv > data0 * 1.05:
+                best = (dv, step, snapshot())
+            if step >= 100 and dv > data0 * 1.5:
                 msg = (f"LOSS-RISE-ABORT stage=S4 step={step} "
                        f"loss0={data0:.4f} loss={dv:.4f}")
                 print(msg, flush=True)
@@ -1619,18 +1639,24 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
         loss = 0.0
         first_verts = None
         for i in range(len(kept)):
-            verts, v = displaced(i)
+            out, v = forward(i)
+            verts = out.vertices * g + off
             if first_verts is None:
                 first_verts = verts
-            cam = state["cams"][v["idx"]]
+            cam = cams[v["idx"]]
             alpha = render_alpha_fov(verts[0], faces, v["azim"],
                                      device, dtx=cam[0], dty=cam[1],
                                      scale=cam[2], fov=v["fov"],
-                                     sigma=SILHOUETTE_SIGMA)
+                                     sigma=OFFSETS_SIGMA)
             loss = loss + (1 - G.soft_iou(alpha, targets[v["idx"]]))
+            loss = loss + 0.02 * (poses[v["idx"]] ** 2).mean()
             vv = dict(v)
             vv["_cam"] = cam
             vv["_g"] = g
+            if v.get("keypoints") is not None:
+                kt = keypoint_term(out.joints, vv, device, g)
+                if kt is not None:
+                    loss = loss + 0.25 * kt[1]
             if "normals" in v:
                 nt = normals_term(verts[0], faces, vv, device)
                 if nt is not None:
@@ -1642,28 +1668,37 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
         mesh0 = Meshes(verts=[first_verts[0]], faces=[faces])
         lap_w = 2.0 if step < int(steps * 0.6) else 0.5
         loss = loss + lap_w * mesh_laplacian_smoothing(mesh0) \
-            + 0.5 * (s ** 2).mean()
+            + 0.5 * (off ** 2).mean()
         loss.backward()
         opt.step()
         with torch.no_grad():
-            s.clamp_(-OFFSET_CLAMP_M, OFFSET_CLAMP_M)
-            s[0, frozen, 0] = 0.0
+            off.clamp_(-OFFSET_CLAMP_M, OFFSET_CLAMP_M)
+            off[0, frozen] = 0.0
+            for c in cams.values():
+                c[0] = c[0].clamp(-1.0, 1.0)
+                c[1] = c[1].clamp(-1.0, 1.0)
+                c[2] = c[2].clamp(0.65, 1.6)
         if step % 100 == 0:
-            sa = s.detach().abs()
+            om = off.detach().norm(dim=2)
             print(f"  S4 step {step} loss {float(loss):.4f} "
-                  f"|s| mean {float(sa.mean()):.4f} "
-                  f"max {float(sa.max()):.4f}", flush=True)
+                  f"|off| mean {float(om.mean()):.4f} "
+                  f"max {float(om.max()):.4f}", flush=True)
     with torch.no_grad():
         dv = float(data_term())
     if dv < best[0]:
-        best = (dv, steps, s.detach().clone())
+        best = (dv, steps, snapshot())
     if best[2] is not None:
-        with torch.no_grad():
-            s.copy_(best[2])
+        restore(best[2])
     print(f"  S4-DONE best data term {best[0]:.4f} @step {best[1]} "
           f"(best state restored)", flush=True)
     state = dict(state)
-    state["scalar_offsets"] = s.detach()
+    state["vector_offsets"] = off.detach()
+    state["poses"] = {**state["poses"],
+                      **{k: t.detach() for k, t in poses.items()}}
+    state["orients"] = {**state["orients"],
+                        **{k: t.detach() for k, t in orients.items()}}
+    state["cams"] = {**state["cams"],
+                     **{k: t.detach() for k, t in cams.items()}}
     return state
 
 def view_metrics_s1(model, faces, state, view, device):
@@ -1680,11 +1715,8 @@ def view_metrics_s1(model, faces, state, view, device):
                     global_orient=state["orients"][i],
                     body_pose=state["poses"][i], return_verts=True)
         posed = out.vertices * g
-        if "scalar_offsets" in state:
-            mesh = Meshes(verts=[posed[0]], faces=[faces])
-            vn = mesh.verts_normals_packed()
-            s = state["scalar_offsets"][0, :, 0].reshape(-1, 1)
-            posed = posed + s * vn.reshape(1, -1, 3)
+        if "vector_offsets" in state:
+            posed = posed + state["vector_offsets"][0].reshape(1, -1, 3)
         alpha = render_alpha_fov(posed[0], faces, view["azim"], device,
                                  dtx=float(cam[0]), dty=float(cam[1]),
                                  scale=float(cam[2]), fov=view["fov"],
@@ -1717,14 +1749,16 @@ def stage_export(model, faces, state, views, workdir, conf,
     base_np = base.cpu().numpy() * g
     faces_np = faces.cpu().numpy()
     nrm = vertex_normals_np(base_np, faces_np)
-    s_np = state["scalar_offsets"][0, :, 0].cpu().numpy()
-    assert np.abs(s_np).max() <= OFFSET_CLAMP_M + 1e-6, \
-        f"offset clamp violated at export: {np.abs(s_np).max():.4f}"
-    verts = apply_scalar_offsets(base_np, nrm, s_np)
+    vec_np = state["vector_offsets"][0].cpu().numpy()
+    assert np.abs(vec_np).max() <= OFFSET_CLAMP_M + 1e-6, \
+        f"offset clamp violated at export: {np.abs(vec_np).max():.4f}"
+    verts = base_np + vec_np
+    s_np = (vec_np * nrm).sum(axis=1)
     npz_path = os.path.join(workdir, "scaffold.npz")
     np.savez(npz_path,
              betas=state["betas"].cpu().numpy(),
              scalar_offsets=s_np.reshape(1, NUM_VERTS, 1),
+             vector_offsets=vec_np.reshape(1, NUM_VERTS, 3),
              confidence=conf, global_scale=np.float64(g),
              height_m=np.float64(HEIGHT_M_DEFAULT))
     ply_path = os.path.join(workdir, "scaffold_body.ply")
@@ -1756,8 +1790,10 @@ def stage_export(model, faces, state, views, workdir, conf,
                                  if v.get("dropped")],
                "validator": vres, "validator_source": vsrc,
                "tape": tape,
-               "offset_stats": {"max_abs_m": float(np.abs(s_np).max()),
-                                "mean_abs_m": float(np.abs(s_np).mean())},
+               "offset_stats": {"max_abs_m": float(
+                                    np.linalg.norm(vec_np, axis=1).max()),
+                                "mean_abs_m": float(
+                                    np.linalg.norm(vec_np, axis=1).mean())},
                "confidence": {"mean": float(conf.mean()),
                               "frac_zero": float((conf <= 0.05).mean())}}
     json.dump(metrics, open(os.path.join(workdir, "stage1_metrics.json"),
@@ -1841,8 +1877,8 @@ def print_guards():
           f"per-view-fit=on best-restore=on "
           f"height-anchor={HEIGHT_M_DEFAULT}m "
           f"traj-monotone=on outlier(>{OUTLIER_SIGMA}sigma)=on "
-          f"offset=canonical-scalar clamp={OFFSET_CLAMP_M}m "
-          f"offsets=gate-pattern-best-restore "
+          f"offset=freevec-posed clamp={OFFSET_CLAMP_M}m "
+          f"offsets=gate-faithful-polish offsets-sigma={OFFSETS_SIGMA:g} "
           f"beta-clamp={BETA_CLAMP} silhouette-sigma={SILHOUETTE_SIGMA:g} "
           f"validator=on loss-rise-abort=on", flush=True)
 
@@ -2079,19 +2115,20 @@ def stage_synth(args):
                        - betas_true)
     b_err = float(beta_errs.max())
     b_mean30 = float(beta_errs[:30].mean())
-    s_hat = state["scalar_offsets"][0, :, 0].cpu().numpy()
+    vec_hat = state["vector_offsets"][0].cpu().numpy()
     # recovery is judged at the SAME metric height: the fit anchors
     # height to 1.6256 m, so scale the known body to that height too
     k_true = HEIGHT_M_DEFAULT / mesh_height_np(verts_true)
     verts_true = verts_true * k_true
-    s_rmse_mm = float(np.sqrt(np.mean((s_hat - s_true * k_true) ** 2))
-                      * 1000.0)
     with torch.no_grad():
         base_hat = model(betas=state["betas"],
                          return_verts=True).vertices[0]
     bh = base_hat.cpu().numpy() * state["g_scale"]
     nh = vertex_normals_np(bh, faces.cpu().numpy())
-    verts_hat = apply_scalar_offsets(bh, nh, s_hat)
+    true_vec = (s_true * k_true)[:, None] * nh
+    s_rmse_mm = float(np.sqrt(np.mean((vec_hat - true_vec) ** 2))
+                      * 1000.0)
+    verts_hat = bh + vec_hat
     tape_t = tape_measurements(verts_true, faces.cpu().numpy())
     tape_h = tape_measurements(verts_hat, faces.cpu().numpy())
     chest_err = None
