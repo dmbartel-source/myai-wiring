@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# GATE-FIT-V7 — MYAI measured-body GATE TEST (plan: GATE_TEST_PLAN.md).
+# GATE-FIT-V8 — MYAI measured-body GATE TEST (plan: GATE_TEST_PLAN.md).
 # Question: can ONE shared SMPL-X shape + per-vertex offsets match the
 # silhouettes of 4 hero views (front/side/back/three-quarter) at once?
 # Stages: segment -> select (azimuth grid) -> fit (beta, then offsets)
@@ -291,7 +291,7 @@ def init_cam_measured(model, faces, view, device, rounds=20):
     return [dtx, dty, scale]
 
 
-def fit_shape(model, faces, views, device, steps_beta=400, steps_off=400,
+def fit_shape(model, faces, views, device, steps_beta=400, steps_off=1000,
               skip_metrics_for=None):
     """views: list of dicts {name, mask512 (np bool), azim}. One shared
     shape; per-view pose + camera offsets. Returns (state, per-view
@@ -301,7 +301,7 @@ def fit_shape(model, faces, views, device, steps_beta=400, steps_off=400,
     betas = torch.zeros(1, 100, device=device, requires_grad=True)
     poses = [torch.zeros(1, 63, device=device, requires_grad=True) for _ in range(n)]
     orients = [torch.zeros(1, 3, device=device, requires_grad=True) for _ in range(n)]
-    print("FIT-GUARDS init=measured clamp=on deadview=on (GATE-FIT-V7)", flush=True)
+    print("FIT-GUARDS init=measured clamp=on deadview=on deep=on (GATE-FIT-V8)", flush=True)
     cams = []
     for v in views:
         c0 = init_cam_measured(model, faces, v, device)
@@ -355,28 +355,39 @@ def fit_shape(model, faces, views, device, steps_beta=400, steps_off=400,
                         cams[i][0] = cams[i][0].clamp(-1.0, 1.0)
                         cams[i][1] = cams[i][1].clamp(-1.0, 1.0)
                         cams[i][2] = cams[i][2].clamp(0.65, 1.6)
-    # offsets stage
+    # offsets stage — V8 DEEP: poses/orients/cams keep polishing at
+    # low LR alongside the offsets (fresh model verts every step, so
+    # pose changes are real, not stale), and the Laplacian smoothing
+    # anneals 2.0 -> 0.5 for the final 40% so fine outline detail
+    # (arm gaps, leg separation) can form late.
     offsets = torch.zeros(1, 10475, 3, device=device, requires_grad=True)
     from pytorch3d.loss import mesh_laplacian_smoothing
     from pytorch3d.structures import Meshes
-    opt2 = torch.optim.Adam([offsets], lr=0.01)
-    base_verts = []
-    with torch.no_grad():
-        for i, v in enumerate(views):
-            out = model(betas=betas, global_orient=orients[i], body_pose=poses[i],
-                        return_verts=True)
-            base_verts.append(out.vertices.detach())
+    opt2 = torch.optim.Adam([{"params": [offsets], "lr": 0.01},
+                             {"params": poses + orients, "lr": 0.003},
+                             {"params": cams, "lr": 0.003}])
     for step in range(steps_off):
         opt2.zero_grad()
         loss = 0.0
+        first_verts = None
         for i, v in enumerate(views):
-            verts = base_verts[i] + offsets
+            out = model(betas=betas, global_orient=orients[i], body_pose=poses[i],
+                        return_verts=True)
+            verts = out.vertices + offsets
+            if i == 0:
+                first_verts = verts
             alpha = render_alpha(verts[0], faces, v["azim"], device,
                                  dtx=cams[i][0], dty=cams[i][1], scale=cams[i][2])
             loss = loss + (1 - soft_iou(alpha, targets[i]))
-        mesh = Meshes(verts=[base_verts[0][0] + offsets[0]], faces=[faces])
-        loss = loss + 2.0 * mesh_laplacian_smoothing(mesh) + 0.5 * (offsets ** 2).mean()
+        mesh = Meshes(verts=[first_verts[0]], faces=[faces])
+        lap_w = 2.0 if step < int(steps_off * 0.6) else 0.5
+        loss = loss + lap_w * mesh_laplacian_smoothing(mesh) + 0.5 * (offsets ** 2).mean()
         loss.backward(); opt2.step()
+        with torch.no_grad():
+            for c in cams:
+                c[0] = c[0].clamp(-1.0, 1.0)
+                c[1] = c[1].clamp(-1.0, 1.0)
+                c[2] = c[2].clamp(0.65, 1.6)
         if step % 100 == 0:
             print(f"  offset step {step} loss {float(loss):.4f}", flush=True)
     state = {"betas": betas.detach(), "offsets": offsets.detach(),
