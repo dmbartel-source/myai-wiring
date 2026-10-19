@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# STAGE1-FIT-V1 — MYAI measured-body STAGE-1 scaffold fit.
+# STAGE1-FIT-V2 — MYAI measured-body STAGE-1 scaffold fit.
 # Implements STAGE1_FITTER_DESIGN.md (S0-S5) on top of the GATE-FIT-V8
 # machinery (gate_fit.py is imported lazily and NEVER modified):
 #   S0 ingest: manifest-driven views, gate-proven mask prep, keypoints
@@ -32,7 +32,7 @@
 # selftest` runs on plain CPU python (no CUDA, no smplx, no torch).
 import argparse, json, math, os, sys
 
-MARKER = "STAGE1-FIT-V1"
+MARKER = "STAGE1-FIT-V2"
 HEIGHT_M_DEFAULT = 1.6256          # David-supplied (5 ft 4 in), Oct 18, 2026
 GMOF_RHO = 100.0                   # SMPLify-X lineage (design: Values)
 OFFSET_CLAMP_M = 0.15              # design hard clamp on scalar offsets
@@ -1415,7 +1415,7 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
                 pt = pointmap_term(verts[0], faces, vv, device)
                 if pt is not None:
                     loss = loss + 1.0 * pt[1]
-        mesh0 = Meshes(verts=[first_verts[0]], faces=[faces])
+        mesh0 = Meshes(verts=[first_verts], faces=[faces])
         lap_w = 2.0 if step < int(steps * 0.6) else 0.5
         loss = loss + lap_w * mesh_laplacian_smoothing(mesh0) \
             + 0.5 * (mag_w * s ** 2).mean()
