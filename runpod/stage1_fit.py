@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# STAGE1-FIT-V10 — MYAI measured-body STAGE-1 scaffold fit.
+# STAGE1-FIT-V11 — MYAI measured-body STAGE-1 scaffold fit.
 # Implements STAGE1_FITTER_DESIGN.md (S0-S5) on top of the GATE-FIT-V8
 # machinery (gate_fit.py is imported lazily and NEVER modified):
 #   S0 ingest: manifest-driven views, gate-proven mask prep, keypoints
@@ -43,7 +43,7 @@
 # selftest` runs on plain CPU python (no CUDA, no smplx, no torch).
 import argparse, json, math, os, sys
 
-MARKER = "STAGE1-FIT-V10"
+MARKER = "STAGE1-FIT-V11"
 HEIGHT_M_DEFAULT = 1.6256          # David-supplied (5 ft 4 in), Oct 18, 2026
 GMOF_RHO = 100.0                   # SMPLify-X lineage (design: Values)
 OFFSET_CLAMP_M = 0.15              # design hard clamp on scalar offsets
@@ -54,10 +54,16 @@ RENDER_SIZE = 512
 RENDER_DIST = 3.2                  # gate-proven camera distance
 FOV_DEFAULT = 38.0                 # gate-proven field of view (deg)
 SILHOUETTE_SIGMA = 1e-7              # calibrated Oct 19, 2026 (pod probes
-OFFSETS_SIGMA = 1e-4                # S4 silhouette sigma: the gate-
-                                    # proven value for the offsets stage
-                                    # (Oct 19 probes: 1e-7 is calibrated for
-                                    # the low-dim stages only)
+OFFSETS_SIGMA = 1e-7                # S4 silhouette sigma: V11 — the
+                                    # calibrated sharp gauge, SAME as PV
+                                    # and the restore judge. V10 exam:
+                                    # optimizing at 1e-4 dragged the PV
+                                    # state outward (sharp judge 1.69 ->
+                                    # 3.67 while the soft term improved).
+                                    # The gate descended at 1e-4 only
+                                    # because its whole pipeline lived
+                                    # at that gauge; mixing gauges
+                                    # across stages is the defect.
                                      # probe_sigma/2/3): at sigma=1e-4 the
                                      # soft-silhouette interior alpha caps
                                      # at ~0.51 against binary targets,
@@ -1567,7 +1573,9 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
     scored by the data term at sigma=1e-7 (probe_sigma3:
     truth is the strict maximum there), while the optimized
     loss keeps the gate-proven sigma=1e-4. Every loss
-    component is logged by name every 25 steps."""
+    component is logged by name every 25 steps.
+    V11: OFFSETS_SIGMA is now 1e-7 (see the constant) — the
+    optimized loss and the judge share the sharp gauge."""
     import torch, numpy as np
     G = gate()
     from pytorch3d.loss import mesh_laplacian_smoothing
