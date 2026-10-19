@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# GATE-FIT-V6 — MYAI measured-body GATE TEST (plan: GATE_TEST_PLAN.md).
+# GATE-FIT-V7 — MYAI measured-body GATE TEST (plan: GATE_TEST_PLAN.md).
 # Question: can ONE shared SMPL-X shape + per-vertex offsets match the
 # silhouettes of 4 hero views (front/side/back/three-quarter) at once?
 # Stages: segment -> select (azimuth grid) -> fit (beta, then offsets)
@@ -245,6 +245,52 @@ def soft_iou(alpha, target):
     union = (alpha + t - alpha * t).sum()
     return inter / union.clamp(min=1.0)
 
+def init_cam_measured(model, faces, view, device, rounds=20):
+    """Measured camera init against the REAL render_alpha params
+    (dtx, dty, scale at fixed dist 3.2). Iterates with IoU-gated
+    acceptance: an update is kept only if the hard IoU improves, so
+    the result is monotone by construction. World-per-pixel at
+    dist 3.2 / fov 38 = 2*3.2*tan(19deg)/512 = 0.0043."""
+    import torch, numpy as np
+    tgt = view["mask512"]
+    tys, txs = np.nonzero(tgt)
+    th = float(tys.max() - tys.min() + 1)
+    tc_r, tc_c = float(tys.mean()), float(txs.mean())
+    with torch.no_grad():
+        out = model(betas=torch.zeros(1, 100, device=device), return_verts=True)
+        verts0 = out.vertices[0]
+    def hard_iou(dtx, dty, scale):
+        a = render_alpha(verts0, faces, view["azim"], device,
+                         dtx=dtx, dty=dty, scale=scale, sigma=1e-5)
+        sil = (a > 0.5).cpu().numpy()
+        inter = (sil & tgt).sum()
+        union = (sil | tgt).sum()
+        return (inter / union if union else 0.0), sil
+    dtx, dty, scale = 0.0, 0.0, 1.0
+    best, _ = hard_iou(dtx, dty, scale)
+    for _ in range(rounds):
+        _, sil = hard_iou(dtx, dty, scale)
+        rys, rxs = np.nonzero(sil)
+        if len(rys) == 0:
+            scale *= 1.2
+            best, _ = hard_iou(dtx, dty, scale)
+            continue
+        rh = float(rys.max() - rys.min() + 1)
+        rc_r, rc_c = float(rys.mean()), float(rxs.mean())
+        cand = (dtx - (tc_c - rc_c) * 0.0043 * 0.8,
+                dty + (tc_r - rc_r) * 0.0043 * 0.8,
+                scale * (th / rh) ** 0.5)
+        val, _ = hard_iou(*cand)
+        if val >= best:
+            dtx, dty, scale = cand
+            best = val
+        else:
+            break
+    print(f"INIT {view['name']}: dtx {dtx:.2f} dty {dty:.2f} "
+          f"scale {scale:.2f} IoU {best:.3f}", flush=True)
+    return [dtx, dty, scale]
+
+
 def fit_shape(model, faces, views, device, steps_beta=400, steps_off=400,
               skip_metrics_for=None):
     """views: list of dicts {name, mask512 (np bool), azim}. One shared
@@ -255,7 +301,11 @@ def fit_shape(model, faces, views, device, steps_beta=400, steps_off=400,
     betas = torch.zeros(1, 100, device=device, requires_grad=True)
     poses = [torch.zeros(1, 63, device=device, requires_grad=True) for _ in range(n)]
     orients = [torch.zeros(1, 3, device=device, requires_grad=True) for _ in range(n)]
-    cams = [torch.tensor([0.0, 0.0, 1.0], device=device, requires_grad=True) for _ in range(n)]
+    print("FIT-GUARDS init=measured clamp=on deadview=on (GATE-FIT-V7)", flush=True)
+    cams = []
+    for v in views:
+        c0 = init_cam_measured(model, faces, v, device)
+        cams.append(torch.tensor(c0, device=device, requires_grad=True))
     targets = [torch.tensor(v["mask512"].astype(np.float32), device=device) for v in views]
     opt = torch.optim.Adam([betas] + poses + orients + cams, lr=0.02)
     offsets = torch.zeros(1, 10475, 3, device=device)
@@ -270,8 +320,41 @@ def fit_shape(model, faces, views, device, steps_beta=400, steps_off=400,
             loss = loss + (1 - soft_iou(alpha, targets[i])) \
                  + 0.02 * (poses[i] ** 2).mean() + 0.001 * (betas ** 2).mean()
         loss.backward(); opt.step()
+        with torch.no_grad():
+            for c in cams:
+                c[0] = c[0].clamp(-1.0, 1.0)
+                c[1] = c[1].clamp(-1.0, 1.0)
+                c[2] = c[2].clamp(0.65, 1.6)
         if step % 100 == 0:
             print(f"  beta step {step} loss {float(loss):.4f}", flush=True)
+    # dead-view guard: a view whose render barely overlaps its photo
+    # after the beta stage would silently poison the metrics (the
+    # Oct 18 side-view collapse). Refit such a view solo, loudly.
+    with torch.no_grad():
+        for i, v in enumerate(views):
+            out = model(betas=betas, global_orient=orients[i], body_pose=poses[i],
+                        return_verts=True)
+            a = render_alpha(out.vertices[0], faces, v["azim"], device,
+                             dtx=cams[i][0], dty=cams[i][1], scale=cams[i][2],
+                             sigma=1e-5)
+            sil = (a > 0.5).cpu().numpy()
+            vi = iou(sil, v["mask512"])
+            print(f"  BETA-IOU {v['name']}: {vi:.3f}", flush=True)
+            if vi < 0.10:
+                print(f"  VIEW-DEAD {v['name']} — solo cam/pose refit", flush=True)
+                optd = torch.optim.Adam([poses[i], orients[i], cams[i]], lr=0.02)
+                for _ in range(150):
+                    optd.zero_grad()
+                    o2 = model(betas=betas, global_orient=orients[i],
+                               body_pose=poses[i], return_verts=True)
+                    a2 = render_alpha(o2.vertices[0], faces, v["azim"], device,
+                                      dtx=cams[i][0], dty=cams[i][1], scale=cams[i][2])
+                    l2 = (1 - soft_iou(a2, targets[i])) + 0.02 * (poses[i] ** 2).mean()
+                    l2.backward(); optd.step()
+                    with torch.no_grad():
+                        cams[i][0] = cams[i][0].clamp(-1.0, 1.0)
+                        cams[i][1] = cams[i][1].clamp(-1.0, 1.0)
+                        cams[i][2] = cams[i][2].clamp(0.65, 1.6)
     # offsets stage
     offsets = torch.zeros(1, 10475, 3, device=device, requires_grad=True)
     from pytorch3d.loss import mesh_laplacian_smoothing
