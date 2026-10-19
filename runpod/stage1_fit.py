@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# STAGE1-FIT-V5 — MYAI measured-body STAGE-1 scaffold fit.
+# STAGE1-FIT-V7 — MYAI measured-body STAGE-1 scaffold fit.
 # Implements STAGE1_FITTER_DESIGN.md (S0-S5) on top of the GATE-FIT-V8
 # machinery (gate_fit.py is imported lazily and NEVER modified):
 #   S0 ingest: manifest-driven views, gate-proven mask prep, keypoints
@@ -32,7 +32,7 @@
 # selftest` runs on plain CPU python (no CUDA, no smplx, no torch).
 import argparse, json, math, os, sys
 
-MARKER = "STAGE1-FIT-V6"
+MARKER = "STAGE1-FIT-V7"
 HEIGHT_M_DEFAULT = 1.6256          # David-supplied (5 ft 4 in), Oct 18, 2026
 GMOF_RHO = 100.0                   # SMPLify-X lineage (design: Values)
 OFFSET_CLAMP_M = 0.15              # design hard clamp on scalar offsets
@@ -145,6 +145,49 @@ def apply_scalar_offsets(verts, normals, s):
     return (np.asarray(verts, dtype=np.float64)
             + np.asarray(s, dtype=np.float64)[:, None]
             * np.asarray(normals, dtype=np.float64))
+
+def smooth_offset_field(verts_np, seed):
+    """Production-representative SYNTH target offset field:
+    LOW-FREQUENCY broad shape differences — chest/hip projection,
+    waist narrowing, shoulder mass, a gentle vertical gradient —
+    built from broad 3D Gaussians (sigma 0.22-0.30 m) centered at
+    anatomical anchors derived from the body's own bounding box
+    (chest ~0.78H, hips ~0.52H, shoulders ~0.85H, waist ~0.62H;
+    left/right pairs offset in x). This is the class of field the
+    production Laplacian-regularized S4 can actually represent.
+    The historical synth field 0.035*sin(3y)*cos(2x) is
+    high-frequency surface wobble that no beta body can
+    outline-match and production offsets would never produce
+    (B2: the test must rehearse the production configuration).
+    Per-anchor amplitudes stay within +/-0.04 m (seeded jitter
+    capped so the bound holds); the summed field is scaled
+    x0.6 to production magnitude (mean |s| ~20 mm, peaks under
+    ~5 cm) and passes through clamp_offsets_np like every
+    production field."""
+    import numpy as np
+    v = np.asarray(verts_np, dtype=np.float64)
+    rng = np.random.default_rng(seed)
+    lo = v.min(axis=0)
+    hi = v.max(axis=0)
+    H = float(hi[1] - lo[1])
+    cx = 0.5 * (lo[0] + hi[0])
+    cz = 0.5 * (lo[2] + hi[2])
+    # (height fraction, x offset m, base amplitude m)
+    anchors = [(0.78, -0.09, +0.030), (0.78, +0.09, +0.030),
+               (0.52, -0.10, +0.024), (0.52, +0.10, +0.024),
+               (0.85, -0.13, +0.013), (0.85, +0.13, +0.013),
+               (0.62, 0.0, -0.018)]
+    s = np.zeros(len(v))
+    for yf, xo, amp in anchors:
+        a = amp * float(rng.uniform(0.85, 1.15))
+        sig = float(rng.uniform(0.22, 0.30))
+        c = np.array([cx + xo, lo[1] + yf * H, cz])
+        d2 = ((v - c) ** 2).sum(axis=1)
+        s += a * np.exp(-d2 / (2.0 * sig * sig))
+    grad = float(rng.uniform(-0.010, 0.010))
+    s += grad * (v[:, 1] - lo[1]) / max(H, 1e-9)
+    s *= 0.6  # summed-field scale: production magnitude, see docstring
+    return clamp_offsets_np(s)
 
 def outlier_drop(residuals, sigma_mult=OUTLIER_SIGMA, sigma_floor=SIGMA_FLOOR):
     """Design rule: drop views whose residual exceeds median + k*sigma,
@@ -1138,11 +1181,18 @@ def keypoint_term(model_out_joints, view, device, g_scale):
     return int(ok.sum()), loss
 
 def fit_joint(model, faces, views, device, steps_a=250, steps_b=150,
-              anchor=None, height_m=HEIGHT_M_DEFAULT):
+              anchor=None, height_m=HEIGHT_M_DEFAULT,
+              sigma_start=None, sigma_end=None):
     """S3: stage A silhouette fit (gate-proven recipe) -> dead-view
     guard -> measured azimuth refinement -> global scale solve
     (height anchor, then FIXED) -> stage B polish with the GMoF
-    keypoint term + anchor trust region. Returns the state dict."""
+    keypoint term + anchor trust region. Returns the state dict.
+    sigma_start/sigma_end (both set): stage A's silhouette sigma
+    is geometrically annealed start->end across the stage; the
+    dead-view solo refit and stage B keep the calibrated default.
+    Loss-rise invariant: any stage whose checkpoint loss
+    (step >= 50) exceeds its step-0 loss by >5% aborts with
+    LOSS-RISE-ABORT instead of wandering on."""
     import torch, numpy as np
     G = gate()
     n = len(views)
@@ -1193,14 +1243,15 @@ def fit_joint(model, faces, views, device, steps_a=250, steps_b=150,
                 c[0] = c[0].clamp(-1.0, 1.0)
                 c[1] = c[1].clamp(-1.0, 1.0)
                 c[2] = c[2].clamp(0.65, 1.6)
-    def stage_loss(i, out, g_scale, use_kp):
+    def stage_loss(i, out, g_scale, use_kp, sigma=SILHOUETTE_SIGMA):
         v = views[i]
         vv = dict(v)
         vv["_cam"] = cams[i]
         vv["_g"] = g_scale
         alpha = render_alpha_fov(out.vertices[0], faces, v["azim"], device,
                                  dtx=cams[i][0], dty=cams[i][1],
-                                 scale=g_scale * cams[i][2], fov=v["fov"])
+                                 scale=g_scale * cams[i][2], fov=v["fov"],
+                                 sigma=sigma)
         l = (1 - G.soft_iou(alpha, targets[i]))
         l = l + 0.02 * (poses[i] ** 2).mean() + 0.001 * (betas ** 2).mean()
         if anchor_t is not None:
@@ -1211,16 +1262,32 @@ def fit_joint(model, faces, views, device, steps_a=250, steps_b=150,
                 l = l + 1.0 * kt[1]
         return l
     opt = build_opt(0.02)
+    loss0_a = None
     for step in range(steps_a):
         opt.zero_grad()
         loss = 0.0
+        sig_a = SILHOUETTE_SIGMA
+        if sigma_start is not None and sigma_end is not None:
+            frac = step / float(steps_a)
+            sig_a = math.exp(math.log(sigma_start) + frac
+                             * (math.log(sigma_end)
+                                - math.log(sigma_start)))
         for i in range(n):
             out = model(betas=betas, global_orient=orients[i],
                         body_pose=poses[i], return_verts=True)
-            loss = loss + stage_loss(i, out, 1.0, False)
+            loss = loss + stage_loss(i, out, 1.0, False, sigma=sig_a)
         loss.backward(); opt.step(); clamp_betas(); clamp_cams()
         if step % 50 == 0:
-            print(f"  S3-A step {step} loss {float(loss):.4f}", flush=True)
+            lv = float(loss)
+            if step == 0:
+                loss0_a = lv
+            print(f"  S3-A step {step} loss {lv:.4f}", flush=True)
+            if step >= 50 and loss0_a is not None \
+                    and lv > loss0_a * 1.05:
+                msg = (f"LOSS-RISE-ABORT stage=A step={step} "
+                       f"loss0={loss0_a:.4f} loss={lv:.4f}")
+                print(msg, flush=True)
+                raise RuntimeError(msg)
     # dead-view guard (gate pattern): solo refit for collapsed views
     with torch.no_grad():
         for i, v in enumerate(views):
@@ -1269,6 +1336,7 @@ def fit_joint(model, faces, views, device, steps_a=250, steps_b=150,
                 c[1] = c[1].clamp(-1.0, 1.0)
                 c[2] = c[2].clamp(0.5, 2.0)
     opt = build_opt(0.01)
+    loss0_b = None
     for step in range(steps_b):
         opt.zero_grad()
         loss = 0.0
@@ -1278,7 +1346,16 @@ def fit_joint(model, faces, views, device, steps_a=250, steps_b=150,
             loss = loss + stage_loss(i, out, g_scale, True)
         loss.backward(); opt.step(); clamp_betas(); clamp_cams_b()
         if step % 50 == 0:
-            print(f"  S3-B step {step} loss {float(loss):.4f}", flush=True)
+            lv = float(loss)
+            if step == 0:
+                loss0_b = lv
+            print(f"  S3-B step {step} loss {lv:.4f}", flush=True)
+            if step >= 50 and loss0_b is not None \
+                    and lv > loss0_b * 1.05:
+                msg = (f"LOSS-RISE-ABORT stage=B step={step} "
+                       f"loss0={loss0_b:.4f} loss={lv:.4f}")
+                print(msg, flush=True)
+                raise RuntimeError(msg)
     state = {"betas": betas.detach(),
              "poses": [p.detach() for p in poses],
              "orients": [o.detach() for o in orients],
@@ -1409,6 +1486,7 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
     opt = torch.optim.Adam([{"params": [s], "lr": 0.005},
                             {"params": poses + orients, "lr": 0.003},
                             {"params": cams, "lr": 0.003}])
+    loss0_s4 = None
     for step in range(steps):
         opt.zero_grad()
         loss = 0.0
@@ -1450,10 +1528,19 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
                 c[1] = c[1].clamp(-1.0, 1.0)
                 c[2] = c[2].clamp(0.5, 2.0)
         if step % 100 == 0:
+            lv = float(loss)
+            if step == 0:
+                loss0_s4 = lv
             sa = s.detach().abs()
-            print(f"  S4 step {step} loss {float(loss):.4f} "
+            print(f"  S4 step {step} loss {lv:.4f} "
                   f"|s| mean {float(sa.mean()):.4f} max {float(sa.max()):.4f}",
                   flush=True)
+            if step >= 50 and loss0_s4 is not None \
+                    and lv > loss0_s4 * 1.05:
+                msg = (f"LOSS-RISE-ABORT stage=S4 step={step} "
+                       f"loss0={loss0_s4:.4f} loss={lv:.4f}")
+                print(msg, flush=True)
+                raise RuntimeError(msg)
     state = dict(state)
     state["scalar_offsets"] = s.detach()
     state["poses"] = [p.detach() for p in poses]
@@ -1629,7 +1716,7 @@ def print_guards():
           f"traj-monotone=on outlier(>{OUTLIER_SIGMA}sigma)=on "
           f"offset=canonical-scalar clamp={OFFSET_CLAMP_M}m "
           f"beta-clamp={BETA_CLAMP} silhouette-sigma={SILHOUETTE_SIGMA:g} "
-          f"validator=on", flush=True)
+          f"validator=on loss-rise-abort=on", flush=True)
 
 def stage_run(args):
     import torch, numpy as np
@@ -1657,8 +1744,13 @@ def stage_run(args):
     views = stage_ingest(args.input, workdir, manifest, kp_sidecar)
     model = G.load_model(model_dir, device)
     faces = model.faces_tensor.to(device)
-    measure_focals(model, faces, views, device)
     measure_azimuths(model, faces, views, device)
+    unresolved = [v["name"] for v in views if v["azim"] is None]
+    if unresolved:
+        print("STAGE1-FAIL azimuth unresolved for "
+              + ", ".join(unresolved), flush=True)
+        sys.exit(1)
+    measure_focals(model, faces, views, device)
     # S2: regressor init sidecar -> beta anchor (never faked)
     init_path = args.init or _first_existing(
         [os.path.join(workdir, "init.json"),
@@ -1781,13 +1873,19 @@ def stage_synth(args):
         joints_true = out_true.joints[0].cpu().numpy()
     base_np = base.cpu().numpy()
     nrm_np = vertex_normals_np(base_np, faces.cpu().numpy())
-    s_true = 0.035 * np.sin(3.0 * base_np[:, 1]) * np.cos(2.0 * base_np[:, 0])
-    s_true = clamp_offsets_np(s_true)
+    if args.synth_field == "smooth":
+        s_true = smooth_offset_field(base_np, seed=7)
+    else:
+        s_true = 0.035 * np.sin(3.0 * base_np[:, 1]) \
+            * np.cos(2.0 * base_np[:, 0])
+        s_true = clamp_offsets_np(s_true)
     verts_true = apply_scalar_offsets(base_np, nrm_np, s_true)
     print(f"SYNTH-TARGET ||betas_true|| "
           f"{float(np.linalg.norm(betas_true)):.3f} | native height "
           f"{mesh_height_np(verts_true):.4f} m (offset-applied, "
-          f"pre-anchor)", flush=True)
+          f"pre-anchor) | field {args.synth_field} |s| mean "
+          f"{float(np.abs(s_true).mean() * 1000.0):.1f} mm max "
+          f"{float(np.abs(s_true).max() * 1000.0):.1f} mm", flush=True)
     azims = [0.0, 45.0, 90.0, 105.0, 135.0, 180.0, 215.0, 270.0]
     views = []
     vt = torch.tensor(verts_true, device=device, dtype=torch.float32)
@@ -1827,9 +1925,21 @@ def stage_synth(args):
     print(f"SYNTH-KEYPOINTS {len(views)} views: true-joint projections + "
           f"2.0px seeded noise, conf 0.9 (0.45 wrists/ankles)",
           flush=True)
+    anchor_betas = None
+    if args.synth_anchor:
+        nrng = np.random.default_rng(11)
+        noise_sig = np.zeros(100)
+        noise_sig[:10] = 0.30
+        noise_sig[10:30] = 0.10
+        anchor_betas = betas_true + nrng.standard_normal(100) * noise_sig
+        print("SYNTH-ANCHOR on (noise sigma 0.30/0.10)", flush=True)
+    else:
+        print("SYNTH-ANCHOR off", flush=True)
     state = fit_joint(model, faces, views, device, steps_a=args.synth_steps,
-                      steps_b=args.synth_steps // 2, anchor=None,
-                      height_m=HEIGHT_M_DEFAULT)
+                      steps_b=args.synth_steps // 2, anchor=anchor_betas,
+                      height_m=HEIGHT_M_DEFAULT,
+                      sigma_start=args.sigma_start,
+                      sigma_end=args.sigma_end)
     conf = compute_coverage(model, faces, state, views, device)
     state = fit_offsets(model, faces, state, views, device, conf,
                         steps=args.synth_steps)
@@ -1892,6 +2002,11 @@ def main():
     ap.add_argument("--steps-off", type=int, default=600)
     ap.add_argument("--lovo-steps", type=int, default=150)
     ap.add_argument("--synth-steps", type=int, default=120)
+    ap.add_argument("--synth-field", choices=["wiggly", "smooth"],
+                    default="wiggly")
+    ap.add_argument("--synth-anchor", action="store_true")
+    ap.add_argument("--sigma-start", type=float, default=None)
+    ap.add_argument("--sigma-end", type=float, default=None)
     a = ap.parse_args()
     if a.cmd == "selftest":
         selftest()
