@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# STAGE1-FIT-V4 — MYAI measured-body STAGE-1 scaffold fit.
+# STAGE1-FIT-V5 — MYAI measured-body STAGE-1 scaffold fit.
 # Implements STAGE1_FITTER_DESIGN.md (S0-S5) on top of the GATE-FIT-V8
 # machinery (gate_fit.py is imported lazily and NEVER modified):
 #   S0 ingest: manifest-driven views, gate-proven mask prep, keypoints
@@ -32,7 +32,7 @@
 # selftest` runs on plain CPU python (no CUDA, no smplx, no torch).
 import argparse, json, math, os, sys
 
-MARKER = "STAGE1-FIT-V4"
+MARKER = "STAGE1-FIT-V5"
 HEIGHT_M_DEFAULT = 1.6256          # David-supplied (5 ft 4 in), Oct 18, 2026
 GMOF_RHO = 100.0                   # SMPLify-X lineage (design: Values)
 OFFSET_CLAMP_M = 0.15              # design hard clamp on scalar offsets
@@ -1753,7 +1753,17 @@ def stage_synth(args):
     model = G.load_model(model_dir, device)
     faces = model.faces_tensor.to(device)
     rng = np.random.RandomState(7)
-    betas_true = np.clip(rng.randn(100) * 0.7, -1.5, 1.5)
+    # Decaying beta spectrum, like real SMPL-X fits: shape variance
+    # concentrates in the leading components. MEASURED on the V4
+    # synth's saved PLYs: the previous flat spectrum
+    # (randn(100)*0.7, clip +-1.5) produced a NON-PERSON — chest
+    # width 1.217 m, chest circumference 2.487 m against waist
+    # 0.656 m at 1.626 m height — so the printed chest recovery
+    # error (117.72 cm) was the target's own defect, not the
+    # fitter's. std_j = 0.8 * 0.82**j for j < 30, 0.03 tail.
+    beta_std = np.array([0.8 * (0.82 ** j) if j < 30 else 0.03
+                         for j in range(100)])
+    betas_true = np.clip(rng.randn(100) * beta_std, -2.0, 2.0)
     with torch.no_grad():
         out_true = model(betas=torch.tensor(betas_true, device=device,
                                             dtype=torch.float32).reshape(1, -1),
@@ -1765,6 +1775,10 @@ def stage_synth(args):
     s_true = 0.035 * np.sin(3.0 * base_np[:, 1]) * np.cos(2.0 * base_np[:, 0])
     s_true = clamp_offsets_np(s_true)
     verts_true = apply_scalar_offsets(base_np, nrm_np, s_true)
+    print(f"SYNTH-TARGET ||betas_true|| "
+          f"{float(np.linalg.norm(betas_true)):.3f} | native height "
+          f"{mesh_height_np(verts_true):.4f} m (offset-applied, "
+          f"pre-anchor)", flush=True)
     azims = [0.0, 45.0, 90.0, 105.0, 135.0, 180.0, 215.0, 270.0]
     views = []
     vt = torch.tensor(verts_true, device=device, dtype=torch.float32)
@@ -1810,8 +1824,10 @@ def stage_synth(args):
     conf = compute_coverage(model, faces, state, views, device)
     state = fit_offsets(model, faces, state, views, device, conf,
                         steps=args.synth_steps)
-    b_err = float(np.abs(state["betas"].cpu().numpy().reshape(-1)
-                         - betas_true).max())
+    beta_errs = np.abs(state["betas"].cpu().numpy().reshape(-1)
+                       - betas_true)
+    b_err = float(beta_errs.max())
+    b_mean30 = float(beta_errs[:30].mean())
     s_hat = state["scalar_offsets"][0, :, 0].cpu().numpy()
     # recovery is judged at the SAME metric height: the fit anchors
     # height to 1.6256 m, so scale the known body to that height too
@@ -1831,9 +1847,10 @@ def stage_synth(args):
     if tape_t["chest"] and tape_h["chest"]:
         chest_err = abs(tape_t["chest"]["circumference_m"]
                         - tape_h["chest"]["circumference_m"]) * 100.0
-    print(f"SYNTH-RECOVERY beta max|err| {b_err:.3f} | offset RMSE "
-          f"{s_rmse_mm:.1f} mm | chest circumference err "
-          f"{chest_err if chest_err is None else round(chest_err, 2)} cm",
+    chest_s = "None" if chest_err is None else f"{chest_err:.2f}"
+    print(f"SYNTH-RECOVERY beta max|err| {b_err:.3f} | "
+          f"beta mean|err|30 {b_mean30:.3f} | offset RMSE "
+          f"{s_rmse_mm:.1f} mm | chest circumference err {chest_s} cm",
           flush=True)
     os.makedirs(args.work, exist_ok=True)
     faces_np = faces.cpu().numpy()
