@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>MYAI — Body Scaffold Viewer</title>
+<style>
+  html,body{margin:0;height:100%;background:#101014;overflow:hidden}
+  #msg{position:fixed;top:10px;left:0;right:0;text-align:center;color:#ddd;
+       font:14px system-ui;z-index:10;padding:0 12px}
+  canvas{display:block}
+</style></head><body>
+<div id="msg">Loading the fitted body…</div>
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js",
+"three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
+const msg = document.getElementById('msg');
+const name = new URLSearchParams(location.search).get('file') || 'scaffold_body.ply';
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x101014);
+const cam = new THREE.PerspectiveCamera(40, innerWidth/innerHeight, 0.01, 100);
+const ren = new THREE.WebGLRenderer({antialias:true});
+ren.setSize(innerWidth, innerHeight); ren.setPixelRatio(devicePixelRatio);
+document.body.appendChild(ren.domElement);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.1));
+const key = new THREE.DirectionalLight(0xffffff, 1.6); key.position.set(1.5,2,2.5); scene.add(key);
+const rim = new THREE.DirectionalLight(0x88aaff, 0.8); rim.position.set(-2,1,-2); scene.add(rim);
+const ctl = new OrbitControls(cam, ren.domElement);
+new PLYLoader().load('/api/media/file/' + encodeURIComponent(name), g => {
+  g.computeVertexNormals();
+  const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({color:0xc9a189, roughness:0.65, metalness:0.05}));
+  g.computeBoundingBox();
+  const c = g.boundingBox.getCenter(new THREE.Vector3());
+  const s = g.boundingBox.getSize(new THREE.Vector3());
+  m.position.sub(c); scene.add(m);
+  cam.position.set(0, 0.1, s.y * 1.45); ctl.target.set(0,0,0); ctl.update();
+  msg.textContent = 'One finger: orbit · pinch: zoom · two fingers: pan';
+}, undefined, e => { msg.textContent = 'Could not load the model file.'; });
+addEventListener('resize', () => { cam.aspect = innerWidth/innerHeight; cam.updateProjectionMatrix(); ren.setSize(innerWidth, innerHeight); });
+ren.setAnimationLoop(() => { ctl.update(); ren.render(scene, cam); });
+</script></body></html>
