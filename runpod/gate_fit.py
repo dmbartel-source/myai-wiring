@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# GATE-FIT-V4 — MYAI measured-body GATE TEST (plan: GATE_TEST_PLAN.md).
+# GATE-FIT-V5 — MYAI measured-body GATE TEST (plan: GATE_TEST_PLAN.md).
 # Question: can ONE shared SMPL-X shape + per-vertex offsets match the
 # silhouettes of 4 hero views (front/side/back/three-quarter) at once?
 # Stages: segment -> select (azimuth grid) -> fit (beta, then offsets)
@@ -10,7 +10,17 @@ import argparse, json, math, os, sys
 
 CANDIDATES = ["5766.png", "5760.png", "5761.png",
               "lib_5765_f_0001.jpg", "lib_5765_f_0012.jpg",
-              "lib_5784-3_f_0019.jpg", "lib_5817_f_0013.jpg"]
+              "lib_5784-3_f_0019.jpg", "lib_5817_f_0013.jpg", "5769.png"]
+# Heroes LABELED BY DAVID (Oct 18, 2026, via chat uploads matched to
+# files by perceptual hash: front/side exact-or-near, back exact).
+# Azimuths: front/back from his labels; side 105 and three-quarter
+# 215 read from the pictures he showed (side = profile with slight
+# back turn; TQ = back three-quarter from her left). The fit refines
+# per-view orientation; a mirrored TQ would surface as a lone low IoU.
+HEROES = [("front", "lib_5765_f_0001.jpg", 0.0),
+          ("three-quarter", "5769.png", 215.0),
+          ("side", "lib_5765_f_0012.jpg", 105.0),
+          ("back", "5766.png", 180.0)]
 ANGLE_SLOTS = {"front": 0.0, "three-quarter": 45.0, "side": 90.0, "back": 180.0}
 
 # ---------------- torch-free metric helpers ----------------
@@ -213,7 +223,7 @@ def render_alpha(verts, faces, azim, device, size=512, dist=3.2,
                          torch.zeros((), device=device)]).reshape(1, 3).to(T.dtype)
     cam = FoVPerspectiveCameras(device=device, R=R, T=T, fov=38.0)
     rast = RasterizationSettings(image_size=size, blur_radius=0.0,
-                                 faces_per_pixel=1)
+                                 faces_per_pixel=1, bin_size=0)
     renderer = MeshRenderer(rasterizer=MeshRasterizer(cameras=cam, raster_settings=rast),
         shader=SoftSilhouetteShader(blend_params=BlendParams(sigma=sigma, gamma=1e-4)))
     out = renderer(mesh)
@@ -424,6 +434,7 @@ def stage_run(indir, workdir):
     print(f"smplx model dir: {model_dir}", flush=True)
     maskdir = os.path.join(workdir, "masks")
     os.makedirs(maskdir, exist_ok=True)
+    hero_names = [h[1] for h in HEROES]
     from PIL import Image as _Im
     def _ok(nm):
         p = os.path.join(maskdir, os.path.splitext(nm)[0] + "_mask.png")
@@ -434,13 +445,21 @@ def stage_run(indir, workdir):
             return True
         except Exception:
             return False
-    if all(_ok(nm) for nm in CANDIDATES):
-        print("MASKS-REUSED (all 7 verify from a previous run)", flush=True)
+    if all(_ok(nm) for nm in hero_names):
+        print("MASKS-REUSED (all heroes verify from a previous run)", flush=True)
     else:
         stage_segment(indir, maskdir)
     model = load_model(model_dir, device)
     faces = model.faces_tensor.to(device)
-    heroes_map = stage_select(model, faces, indir, maskdir, device)
+    from PIL import Image as _Im2
+    import numpy as _np
+    heroes_map = {}
+    for slot, nm, az in HEROES:
+        mp = os.path.join(maskdir, os.path.splitext(nm)[0] + "_mask.png")
+        m = _np.array(_Im2.open(mp)) > 0
+        sq, _ = prep_mask(m)
+        heroes_map[slot] = {"name": nm, "azim": az, "mask512": sq}
+        print(f"HERO {slot}: {nm} (azim {az:.0f}, DAVID-LABELED)", flush=True)
     views = []
     for i, (slot, h) in enumerate(heroes_map.items()):
         views.append({"idx": i, "slot": slot, "name": h["name"],
