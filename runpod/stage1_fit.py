@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# STAGE1-FIT-V7 — MYAI measured-body STAGE-1 scaffold fit.
+# STAGE1-FIT-V8 — MYAI measured-body STAGE-1 scaffold fit.
 # Implements STAGE1_FITTER_DESIGN.md (S0-S5) on top of the GATE-FIT-V8
 # machinery (gate_fit.py is imported lazily and NEVER modified):
 #   S0 ingest: manifest-driven views, gate-proven mask prep, keypoints
@@ -12,15 +12,26 @@
 #      present (robust uncertainty-weighted beta fusion = the shape
 #      ANCHOR); without it, gate-proven measured-IoU cameras + zero
 #      betas, printed loudly as INIT-FALLBACK. Nothing is faked.
-#   S3 joint fit: shared betas (anchor trust region), per-view axis-
-#      angle pose, trajectory-constrained cameras, GMoF keypoint term
-#      (rho=100) when keypoints exist, silhouette at low weight,
-#      ONE global scale solved so neutral height = 1.6256 m then FIXED,
-#      outlier-view rejection (>2.5 sigma) with the dropped list saved.
+#   S3 per-view fit (V8): betas FROZEN at the fused anchor —
+#      measured Oct 19, 2026 (arms A-G): silhouette-driven beta
+#      optimization drifts 0.38-0.54 mean30 against an anchor whose
+#      own error is 0.120, so betas are never optimized jointly
+#      again (anchor-free fallback: a shared betas-only phase,
+#      best-restored). Per-view axis-angle pose/orient/camera are
+#      fitted INDEPENDENTLY (Adam lr 0.005, Arm H recipe: GMoF
+#      keypoint term rho=100 at weight 1.0, silhouette 0.25, pose
+#      prior) with BEST-STATE RESTORE, split around measured
+#      azimuth refinement; ONE global scale solved from the frozen
+#      betas so neutral height = 1.6256 m then FIXED; outlier-view
+#      rejection (>2.5 sigma) with the dropped list saved.
 #   S4 offsets: CANONICAL scalar field along surface normals (never
-#      free 3-vectors — the gate-export failure mode), hard clamp
-#      0.15 m, Laplacian + magnitude regularization, per-vertex
-#      confidence from view coverage; unobserved vertices stay at 0.
+#      free 3-vectors — the gate-export failure mode), gate-proven
+#      offsets pattern (gate_fit.fit_shape offsets phase: silhouette
+#      sum, Laplacian on the first view's displaced posed mesh,
+#      0.5*mean(s^2), Adam lr 0.01, Laplacian anneal 2.0 -> 0.5),
+#      hard clamp 0.15 m, per-vertex confidence from view coverage;
+#      unobserved vertices stay at 0; BEST-STATE RESTORE and the
+#      rise-abort invariant on the pure silhouette data term.
 #      Optional normals / pointmap evidence from sidecar dirs, each
 #      with a loud MISSING behavior when absent.
 #   S5 export + validation: scaffold.npz (betas, scalar offsets,
@@ -32,7 +43,7 @@
 # selftest` runs on plain CPU python (no CUDA, no smplx, no torch).
 import argparse, json, math, os, sys
 
-MARKER = "STAGE1-FIT-V7"
+MARKER = "STAGE1-FIT-V8"
 HEIGHT_M_DEFAULT = 1.6256          # David-supplied (5 ft 4 in), Oct 18, 2026
 GMOF_RHO = 100.0                   # SMPLify-X lineage (design: Values)
 OFFSET_CLAMP_M = 0.15              # design hard clamp on scalar offsets
@@ -1147,7 +1158,7 @@ def pointmap_term(verts, faces, view, device):
     resid = torch.linalg.norm(a * M + b - Tp, dim=1)
     return float(ok.sum()), torch.sqrt(resid ** 2 + 1e-6).mean()
 
-# ---------------- S2/S3: joint fit ----------------
+# ---------------- S2/S3: per-view fit (V8) ----------------
 
 def keypoint_term(model_out_joints, view, device, g_scale):
     """GMoF keypoint term for one view. Returns (n_points, loss) or
@@ -1180,34 +1191,163 @@ def keypoint_term(model_out_joints, view, device, g_scale):
     loss = (per * w[ok]).sum() / w[ok].sum() / 100.0
     return int(ok.sum()), loss
 
-def fit_joint(model, faces, views, device, steps_a=250, steps_b=150,
-              anchor=None, height_m=HEIGHT_M_DEFAULT,
-              sigma_start=None, sigma_end=None):
-    """S3: stage A silhouette fit (gate-proven recipe) -> dead-view
-    guard -> measured azimuth refinement -> global scale solve
-    (height anchor, then FIXED) -> stage B polish with the GMoF
-    keypoint term + anchor trust region. Returns the state dict.
-    sigma_start/sigma_end (both set): stage A's silhouette sigma
-    is geometrically annealed start->end across the stage; the
-    dead-view solo refit and stage B keep the calibrated default.
-    Loss-rise invariant: any stage whose checkpoint loss
-    (step >= 50) exceeds its step-0 loss by >5% aborts with
-    LOSS-RISE-ABORT instead of wandering on."""
+def _pv_loss(model, faces, betas, pose, orient, cam, view, target,
+             device, g_scale, use_kp):
+    """One view's per-view loss (V8 / Arm H recipe): GMoF keypoint
+    term at weight 1.0 when usable for this view, silhouette
+    (1 - soft_iou at the calibrated SILHOUETTE_SIGMA) at weight
+    0.25 with keypoints / 1.0 without, pose prior
+    0.02 * mean(pose^2). Betas never enter: they are the frozen
+    anchor (or the SB-refined fallback) and carry no gradient.
+    Returns (loss, kp_ok)."""
+    import torch
+    G = gate()
+    out = model(betas=betas, global_orient=orient, body_pose=pose,
+                return_verts=True)
+    alpha = render_alpha_fov(out.vertices[0], faces, view["azim"],
+                             device, dtx=cam[0], dty=cam[1],
+                             scale=g_scale * cam[2], fov=view["fov"],
+                             sigma=SILHOUETTE_SIGMA)
+    sil = 1 - G.soft_iou(alpha, target)
+    loss = 0.02 * (pose ** 2).mean()
+    if use_kp:
+        vv = dict(view)
+        vv["_cam"] = cam
+        vv["_g"] = g_scale
+        kt = keypoint_term(out.joints, vv, device, g_scale)
+        if kt is not None:
+            return loss + 1.0 * kt[1] + 0.25 * sil, True
+    return loss + 1.0 * sil, False
+
+
+def _pv_fit_one(model, faces, betas, view, target, device, g_scale,
+                pose, orient, cam, steps, lr=0.005, tag="PV",
+                use_kp=True):
+    """Independent Adam fit of ONE view's (pose, orient, cam) with
+    betas frozen, BEST-STATE RESTORE on the view's own loss — the
+    Arm H stabilizer the V7 joint fit lacked (it returned the final
+    state however wrecked). Mutates pose/orient/cam in place to
+    their best-step values. Returns (best_loss, best_step)."""
+    import torch
+    opt = torch.optim.Adam([pose, orient, cam], lr=lr)
+    best = (float("inf"), -1, None)
+    kp_ok = None
+    for step in range(steps):
+        opt.zero_grad()
+        loss, ko = _pv_loss(model, faces, betas, pose, orient, cam,
+                            view, target, device, g_scale, use_kp)
+        if kp_ok is None:
+            kp_ok = ko
+            if use_kp and not ko:
+                print(f"  {tag}-NOKP {view['name']}: no usable "
+                      f"keypoints — silhouette weight 1.0",
+                      flush=True)
+        lv = float(loss)
+        if lv < best[0]:
+            best = (lv, step, (pose.detach().clone(),
+                               orient.detach().clone(),
+                               cam.detach().clone()))
+        loss.backward()
+        opt.step()
+        with torch.no_grad():
+            cam[0] = cam[0].clamp(-1.0, 1.0)
+            cam[1] = cam[1].clamp(-1.0, 1.0)
+            cam[2] = cam[2].clamp(0.5, 2.0)
+    with torch.no_grad():
+        loss, _ = _pv_loss(model, faces, betas, pose, orient, cam,
+                           view, target, device, g_scale, use_kp)
+        if float(loss) < best[0]:
+            best = (float(loss), steps, (pose.detach().clone(),
+                                         orient.detach().clone(),
+                                         cam.detach().clone()))
+        pose.copy_(best[2][0])
+        orient.copy_(best[2][1])
+        cam.copy_(best[2][2])
+    return best[0], best[1]
+
+
+def _sb_refine_betas(model, faces, betas, poses, orients, cams,
+                     views, targets, device, steps):
+    """Anchor-free fallback ONLY (no init sidecar): the shared betas
+    are refined ALONE (Adam lr 0.005) against the summed silhouette
+    data term, with poses/orients/cameras held at their measured
+    values, betas clamped to +/-BETA_CLAMP after every step, and
+    BEST-STATE RESTORE on the data term checkpointed every 25
+    steps. Betas are never jointly optimized with poses/cameras —
+    that configuration is the measured V7 failure (arms A-G)."""
+    import torch
+    G = gate()
+
+    def data_term():
+        tot = 0.0
+        for i, v in enumerate(views):
+            out = model(betas=betas, global_orient=orients[i],
+                        body_pose=poses[i], return_verts=True)
+            alpha = render_alpha_fov(out.vertices[0], faces,
+                                     v["azim"], device,
+                                     dtx=cams[i][0], dty=cams[i][1],
+                                     scale=cams[i][2], fov=v["fov"],
+                                     sigma=SILHOUETTE_SIGMA)
+            tot = tot + (1 - G.soft_iou(alpha, targets[i]))
+        return tot
+
+    opt = torch.optim.Adam([betas], lr=0.005)
+    best = (float("inf"), -1, None)
+    for step in range(steps):
+        if step % 25 == 0:
+            with torch.no_grad():
+                dv = float(data_term())
+            if dv < best[0]:
+                best = (dv, step, betas.detach().clone())
+            print(f"  SB step {step} data {dv:.4f}", flush=True)
+        opt.zero_grad()
+        loss = data_term() + 0.001 * (betas ** 2).mean()
+        loss.backward()
+        opt.step()
+        with torch.no_grad():
+            betas.clamp_(-BETA_CLAMP, BETA_CLAMP)
+    with torch.no_grad():
+        dv = float(data_term())
+    if dv < best[0]:
+        best = (dv, steps, betas.detach().clone())
+    if best[2] is not None:
+        with torch.no_grad():
+            betas.copy_(best[2])
+    print(f"  SB-DONE anchor-free betas: best data {best[0]:.4f} "
+          f"@step {best[1]} (restored)", flush=True)
+
+
+def fit_views_per_view(model, faces, views, device, steps=300,
+                       anchor=None, height_m=HEIGHT_M_DEFAULT):
+    """S3 (V8): betas FROZEN at the fused regressor anchor. Measured
+    Oct 19, 2026 (arms A-G): silhouette-driven beta optimization
+    drifts 0.38-0.54 mean30 against an anchor whose own error is
+    0.120, in every joint configuration tried — the outline-optimal
+    beta is not the true beta when the surface carries offset
+    detail. Optimization is therefore reserved for what it provably
+    does well here: per-view pose/orient/camera, fitted
+    INDEPENDENTLY per view (Adam lr 0.005; keypoints 1.0 +
+    silhouette 0.25 + pose prior — the Arm H recipe, per-view best
+    losses 0.10-0.56) with BEST-STATE RESTORE, split around the
+    measured azimuth refinement. The ONE global scale is solved
+    from the frozen betas' neutral height and FIXED before fitting.
+    Anchor-free fallback: _sb_refine_betas runs first (betas alone,
+    never joint), then the same per-view machinery."""
     import torch, numpy as np
     G = gate()
     n = len(views)
+    frozen = anchor is not None
+    print(f"FIT-GUARDS betas="
+          f"{'frozen-at-anchor' if frozen else 'free'} "
+          f"per-view=independent-lr0.005 best-restore=on "
+          f"offsets=gate-pattern-best-restore", flush=True)
     for v in views:
-        c0 = init_cam_measured_fov(model, faces, v, device)
-        v["_cam0"] = c0
-    betas = torch.zeros(1, 100, device=device, requires_grad=True)
-    if anchor is not None:
+        v["_cam0"] = init_cam_measured_fov(model, faces, v, device)
+    betas = torch.zeros(1, 100, device=device)
+    if frozen:
         with torch.no_grad():
             betas.copy_(torch.tensor(anchor, device=device,
                                      dtype=betas.dtype).reshape(1, -1))
-    def clamp_betas():
-        with torch.no_grad():
-            betas.clamp_(-BETA_CLAMP, BETA_CLAMP)
-    clamp_betas()  # stage entry: anchor or zero betas start in bounds
     poses = []
     for v in views:
         p0 = torch.zeros(1, 63, device=device)
@@ -1225,100 +1365,14 @@ def fit_joint(model, faces, views, device, steps_a=250, steps_b=150,
                for _ in range(n)]
     cams = [torch.tensor(v["_cam0"], device=device, requires_grad=True)
             for v in views]
-    targets = [torch.tensor(v["mask512"].astype(np.float32), device=device)
-               for v in views]
-    anchor_t = None
-    if anchor is not None:
-        anchor_t = torch.tensor(anchor, device=device,
-                                dtype=betas.dtype).reshape(1, -1)
-    def build_opt(lr, include_b=True):
-        ps = [poses, orients, cams]
-        ps = [p for grp in ps for p in grp]
-        if include_b:
-            ps = [betas] + ps
-        return torch.optim.Adam(ps, lr=lr)
-    def clamp_cams():
-        with torch.no_grad():
-            for c in cams:
-                c[0] = c[0].clamp(-1.0, 1.0)
-                c[1] = c[1].clamp(-1.0, 1.0)
-                c[2] = c[2].clamp(0.65, 1.6)
-    def stage_loss(i, out, g_scale, use_kp, sigma=SILHOUETTE_SIGMA):
-        v = views[i]
-        vv = dict(v)
-        vv["_cam"] = cams[i]
-        vv["_g"] = g_scale
-        alpha = render_alpha_fov(out.vertices[0], faces, v["azim"], device,
-                                 dtx=cams[i][0], dty=cams[i][1],
-                                 scale=g_scale * cams[i][2], fov=v["fov"],
-                                 sigma=sigma)
-        l = (1 - G.soft_iou(alpha, targets[i]))
-        l = l + 0.02 * (poses[i] ** 2).mean() + 0.001 * (betas ** 2).mean()
-        if anchor_t is not None:
-            l = l + 0.05 * ((betas - anchor_t) ** 2).mean()
-        if use_kp:
-            kt = keypoint_term(out.joints, vv, device, g_scale)
-            if kt is not None:
-                l = l + 1.0 * kt[1]
-        return l
-    opt = build_opt(0.02)
-    loss0_a = None
-    for step in range(steps_a):
-        opt.zero_grad()
-        loss = 0.0
-        sig_a = SILHOUETTE_SIGMA
-        if sigma_start is not None and sigma_end is not None:
-            frac = step / float(steps_a)
-            sig_a = math.exp(math.log(sigma_start) + frac
-                             * (math.log(sigma_end)
-                                - math.log(sigma_start)))
-        for i in range(n):
-            out = model(betas=betas, global_orient=orients[i],
-                        body_pose=poses[i], return_verts=True)
-            loss = loss + stage_loss(i, out, 1.0, False, sigma=sig_a)
-        loss.backward(); opt.step(); clamp_betas(); clamp_cams()
-        if step % 50 == 0:
-            lv = float(loss)
-            if step == 0:
-                loss0_a = lv
-            print(f"  S3-A step {step} loss {lv:.4f}", flush=True)
-            if step >= 50 and loss0_a is not None \
-                    and lv > loss0_a * 1.05:
-                msg = (f"LOSS-RISE-ABORT stage=A step={step} "
-                       f"loss0={loss0_a:.4f} loss={lv:.4f}")
-                print(msg, flush=True)
-                raise RuntimeError(msg)
-    # dead-view guard (gate pattern): solo refit for collapsed views
-    with torch.no_grad():
-        for i, v in enumerate(views):
-            out = model(betas=betas, global_orient=orients[i],
-                        body_pose=poses[i], return_verts=True)
-            a = render_alpha_fov(out.vertices[0], faces, v["azim"], device,
-                                 dtx=cams[i][0], dty=cams[i][1],
-                                 scale=cams[i][2], fov=v["fov"], sigma=1e-5)
-            vi = G.iou((a > 0.5).cpu().numpy(), v["mask512"])
-            print(f"  BETA-IOU {v['name']}: {vi:.3f}", flush=True)
-            if vi < 0.10:
-                print(f"  VIEW-DEAD {v['name']} — solo cam/pose refit",
-                      flush=True)
-                optd = torch.optim.Adam([poses[i], orients[i], cams[i]],
-                                        lr=0.02)
-                for _ in range(150):
-                    optd.zero_grad()
-                    o2 = model(betas=betas, global_orient=orients[i],
-                               body_pose=poses[i], return_verts=True)
-                    vv = dict(v); vv["_cam"] = cams[i]; vv["_g"] = 1.0
-                    a2 = render_alpha_fov(o2.vertices[0], faces, v["azim"],
-                                          device, dtx=cams[i][0],
-                                          dty=cams[i][1], scale=cams[i][2],
-                                          fov=v["fov"])
-                    l2 = (1 - G.soft_iou(a2, targets[i])) \
-                        + 0.02 * (poses[i] ** 2).mean()
-                    l2.backward(); optd.step(); clamp_cams()
-    refine_azimuths(model, faces, views, device,
-                    {"betas": betas, "poses": poses, "orients": orients,
-                     "cams": cams}, g_scale=1.0)
-    # global scale: solve once from the neutral body height, then FIX
+    targets = [torch.tensor(v["mask512"].astype(np.float32),
+                            device=device) for v in views]
+    if not frozen:
+        betas = betas.requires_grad_(True)
+        _sb_refine_betas(model, faces, betas, poses, orients, cams,
+                         views, targets, device, steps)
+    betas = betas.detach()
+    # global scale: solve once from the neutral body height, FIXED
     with torch.no_grad():
         out = model(betas=betas, return_verts=True)
         h0 = mesh_height_np(out.vertices[0].cpu().numpy())
@@ -1329,34 +1383,52 @@ def fit_joint(model, faces, views, device, steps_a=250, steps_b=150,
     with torch.no_grad():
         for c in cams:
             c[2] = (c[2] / g_scale).clamp(0.5, 2.0)
-    def clamp_cams_b():
-        with torch.no_grad():
-            for c in cams:
-                c[0] = c[0].clamp(-1.0, 1.0)
-                c[1] = c[1].clamp(-1.0, 1.0)
-                c[2] = c[2].clamp(0.5, 2.0)
-    opt = build_opt(0.01)
-    loss0_b = None
-    for step in range(steps_b):
-        opt.zero_grad()
-        loss = 0.0
-        for i in range(n):
+    s1 = max(1, steps // 2)
+    for i, v in enumerate(views):
+        bl, bs = _pv_fit_one(model, faces, betas, v, targets[i],
+                             device, g_scale, poses[i], orients[i],
+                             cams[i], s1, tag="PV1")
+        print(f"  PV1 {v['name']}: best loss {bl:.4f} @step {bs}",
+              flush=True)
+    refine_azimuths(model, faces, views, device,
+                    {"betas": betas, "poses": poses,
+                     "orients": orients, "cams": cams},
+                    g_scale=g_scale)
+    s2 = max(1, steps - s1)
+    for i, v in enumerate(views):
+        bl, bs = _pv_fit_one(model, faces, betas, v, targets[i],
+                             device, g_scale, poses[i], orients[i],
+                             cams[i], s2, tag="PV2")
+        print(f"  PV2 {v['name']}: best loss {bl:.4f} @step {bs}",
+              flush=True)
+    # dead-view guard (gate pattern): hard-IoU check per view; a
+    # collapsed view gets a solo per-view refit (silhouette-only,
+    # full step budget, best-restore still applies).
+    dead = []
+    with torch.no_grad():
+        for i, v in enumerate(views):
             out = model(betas=betas, global_orient=orients[i],
                         body_pose=poses[i], return_verts=True)
-            loss = loss + stage_loss(i, out, g_scale, True)
-        loss.backward(); opt.step(); clamp_betas(); clamp_cams_b()
-        if step % 50 == 0:
-            lv = float(loss)
-            if step == 0:
-                loss0_b = lv
-            print(f"  S3-B step {step} loss {lv:.4f}", flush=True)
-            if step >= 50 and loss0_b is not None \
-                    and lv > loss0_b * 1.05:
-                msg = (f"LOSS-RISE-ABORT stage=B step={step} "
-                       f"loss0={loss0_b:.4f} loss={lv:.4f}")
-                print(msg, flush=True)
-                raise RuntimeError(msg)
-    state = {"betas": betas.detach(),
+            a = render_alpha_fov(out.vertices[0], faces, v["azim"],
+                                 device, dtx=cams[i][0],
+                                 dty=cams[i][1],
+                                 scale=g_scale * cams[i][2],
+                                 fov=v["fov"], sigma=1e-5)
+            vi = G.iou((a > 0.5).cpu().numpy(), v["mask512"])
+            print(f"  BETA-IOU {v['name']}: {vi:.3f}", flush=True)
+            if vi < 0.10:
+                dead.append(i)
+    for i in dead:
+        v = views[i]
+        print(f"  VIEW-DEAD {v['name']} — solo per-view refit "
+              f"(silhouette-only, full steps)", flush=True)
+        bl, bs = _pv_fit_one(model, faces, betas, v, targets[i],
+                             device, g_scale, poses[i], orients[i],
+                             cams[i], steps, tag="PV-DEAD",
+                             use_kp=False)
+        print(f"  PV-DEAD {v['name']}: best loss {bl:.4f} @step {bs}",
+              flush=True)
+    state = {"betas": betas,
              "poses": [p.detach() for p in poses],
              "orients": [o.detach() for o in orients],
              "cams": [c.detach() for c in cams],
@@ -1452,13 +1524,39 @@ def compute_coverage(model, faces, state, views, device):
     return conf
 
 def fit_offsets(model, faces, state, views, device, conf, steps=600):
-    """S4: one canonical scalar field s (meters), applied along the
-    posed surface normal each view; exported along neutral normals.
-    Evidence: silhouette (low weight) + optional normals/pointmap
-    terms. Regularizers: annealed Laplacian (gate pattern), magnitude
-    weighted against low-confidence vertices; unobserved vertices are
-    frozen at 0 and the field is hard-clamped to +/-OFFSET_CLAMP_M
-    after every step."""
+    """S4 (V8): one canonical scalar field s (meters), applied along
+    the posed surface normal each view; exported along neutral
+    normals. The V7 internals were measured broken (Arm I,
+    Oct 19, 2026: from a PERFECT state — true betas/poses/cameras —
+    its loss still rose 0.9993 -> 1.2302 with the clamp saturated),
+    so this stage now mirrors the GATE-PROVEN offsets phase of
+    gate_fit.fit_shape: silhouette sum at weight 1.0 per view,
+    Laplacian smoothing on the first view's displaced posed mesh,
+    magnitude term 0.5 * mean(s^2), Adam lr 0.01 (the gate's offsets
+    lr), Laplacian weight annealed 2.0 -> 0.5 for the final 40%.
+    ADAPTATIONS from the gate pattern, each deliberate:
+    (a) the gate optimizes free 3-vector offsets; here the variable
+        is stage-1's canonical SCALAR field (free vectors were the
+        gate-export failure mode) — the Laplacian mesh is built
+        from verts displaced by s along the posed normals instead
+        of verts + free offsets;
+    (b) the gate's renders use its sigma=1e-4 default; here they
+        use the calibrated SILHOUETTE_SIGMA=1e-7;
+    (c) poses/orients/cameras are FROZEN here (the gate polishes
+        them at lr 0.003): per-view pose fitting is
+        fit_views_per_view's job (Arm H), and re-opening joint
+        drift inside S4 is the measured Arm G/I failure mode;
+    (d) stage-1's design guards stay: hard clamp +/-OFFSET_CLAMP_M
+        after every step, coverage <= 0.05 vertices frozen at 0;
+    (e) BEST-STATE RESTORE and the LOSS-RISE-ABORT invariant are
+        evaluated on the PURE SILHOUETTE DATA TERM (sum of
+        1 - soft_iou over kept views; no regularizers, no evidence
+        terms), checkpointed every 25 steps, so regularizer
+        annealing can neither trip nor mask them (the V7 abort
+        fired on the total loss).
+    Optional normals/pointmap evidence terms (weight 1.0 when the
+    sidecars exist) remain in the optimized loss as in V7; they
+    never enter the restore/abort data term."""
     import torch, numpy as np
     G = gate()
     from pytorch3d.loss import mesh_laplacian_smoothing
@@ -1468,45 +1566,71 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
         print("STAGE1-FAIL S4: every view was dropped as an outlier")
         sys.exit(1)
     s = torch.zeros(1, NUM_VERTS, 1, device=device, requires_grad=True)
-    poses = [p.clone().detach().requires_grad_(True) for p in state["poses"]]
-    orients = [o.clone().detach().requires_grad_(True)
-               for o in state["orients"]]
-    cams = [c.clone().detach().requires_grad_(True) for c in state["cams"]]
     g = state["g_scale"]
     conf_t = torch.tensor(conf, device=device, dtype=torch.float32)
     frozen = conf_t <= 0.05
-    mag_w = (1.5 - conf_t).reshape(1, NUM_VERTS, 1)
     targets = {v["idx"]: torch.tensor(v["mask512"].astype(np.float32),
                                       device=device) for v in kept}
-    with torch.no_grad():
-        base0 = model(betas=state["betas"], return_verts=True).vertices[0]
-        n0 = vertex_normals_np(base0.cpu().numpy(),
-                               faces.cpu().numpy())
-    n0_t = torch.tensor(n0, device=device, dtype=torch.float32)
-    opt = torch.optim.Adam([{"params": [s], "lr": 0.005},
-                            {"params": poses + orients, "lr": 0.003},
-                            {"params": cams, "lr": 0.003}])
-    loss0_s4 = None
+    opt = torch.optim.Adam([s], lr=0.01)
+
+    def displaced(i):
+        """Kept-view i's posed, offset-displaced verts (metric
+        scale, offsets along the posed surface normals)."""
+        v = kept[i]
+        vi = v["idx"]
+        out = model(betas=state["betas"],
+                    global_orient=state["orients"][vi],
+                    body_pose=state["poses"][vi], return_verts=True)
+        posed = out.vertices * g
+        mesh = Meshes(verts=[posed[0]], faces=[faces])
+        vn = mesh.verts_normals_packed().detach()
+        return (posed + s[0, :, 0].reshape(-1, 1)
+                * vn.reshape(-1, 3)), v
+
+    def data_term():
+        tot = 0.0
+        for i in range(len(kept)):
+            verts, v = displaced(i)
+            cam = state["cams"][v["idx"]]
+            alpha = render_alpha_fov(verts[0], faces, v["azim"],
+                                     device, dtx=cam[0], dty=cam[1],
+                                     scale=cam[2], fov=v["fov"],
+                                     sigma=SILHOUETTE_SIGMA)
+            tot = tot + (1 - G.soft_iou(alpha, targets[v["idx"]]))
+        return tot
+
+    best = (float("inf"), -1, None)
+    data0 = None
     for step in range(steps):
+        if step % 25 == 0:
+            with torch.no_grad():
+                dv = float(data_term())
+            if data0 is None:
+                data0 = dv
+            if dv < best[0]:
+                best = (dv, step, s.detach().clone())
+            if step >= 50 and data0 is not None \
+                    and dv > data0 * 1.05:
+                msg = (f"LOSS-RISE-ABORT stage=S4 step={step} "
+                       f"loss0={data0:.4f} loss={dv:.4f}")
+                print(msg, flush=True)
+                raise RuntimeError(msg)
         opt.zero_grad()
         loss = 0.0
         first_verts = None
-        for v in kept:
-            i = v["idx"]
-            out = model(betas=state["betas"], global_orient=orients[i],
-                        body_pose=poses[i], return_verts=True)
-            posed = out.vertices * g
-            mesh = Meshes(verts=[posed[0]], faces=[faces])
-            vn = mesh.verts_normals_packed().detach()
-            verts = posed + s[0, :, 0].reshape(-1, 1) * vn.reshape(-1, 3)
+        for i in range(len(kept)):
+            verts, v = displaced(i)
             if first_verts is None:
-                first_verts = (base0 * g
-                               + s[0, :, 0].reshape(-1, 1) * n0_t)
-            alpha = render_alpha_fov(verts[0], faces, v["azim"], device,
-                                     dtx=cams[i][0], dty=cams[i][1],
-                                     scale=cams[i][2], fov=v["fov"])
-            loss = loss + 0.5 * (1 - G.soft_iou(alpha, targets[i]))
-            vv = dict(v); vv["_cam"] = cams[i]; vv["_g"] = g
+                first_verts = verts
+            cam = state["cams"][v["idx"]]
+            alpha = render_alpha_fov(verts[0], faces, v["azim"],
+                                     device, dtx=cam[0], dty=cam[1],
+                                     scale=cam[2], fov=v["fov"],
+                                     sigma=SILHOUETTE_SIGMA)
+            loss = loss + (1 - G.soft_iou(alpha, targets[v["idx"]]))
+            vv = dict(v)
+            vv["_cam"] = cam
+            vv["_g"] = g
             if "normals" in v:
                 nt = normals_term(verts[0], faces, vv, device)
                 if nt is not None:
@@ -1515,42 +1639,32 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
                 pt = pointmap_term(verts[0], faces, vv, device)
                 if pt is not None:
                     loss = loss + 1.0 * pt[1]
-        mesh0 = Meshes(verts=[first_verts], faces=[faces])
+        mesh0 = Meshes(verts=[first_verts[0]], faces=[faces])
         lap_w = 2.0 if step < int(steps * 0.6) else 0.5
         loss = loss + lap_w * mesh_laplacian_smoothing(mesh0) \
-            + 0.5 * (mag_w * s ** 2).mean()
-        loss.backward(); opt.step()
+            + 0.5 * (s ** 2).mean()
+        loss.backward()
+        opt.step()
         with torch.no_grad():
             s.clamp_(-OFFSET_CLAMP_M, OFFSET_CLAMP_M)
             s[0, frozen, 0] = 0.0
-            for c in cams:
-                c[0] = c[0].clamp(-1.0, 1.0)
-                c[1] = c[1].clamp(-1.0, 1.0)
-                c[2] = c[2].clamp(0.5, 2.0)
         if step % 100 == 0:
-            lv = float(loss)
-            if step == 0:
-                loss0_s4 = lv
             sa = s.detach().abs()
-            print(f"  S4 step {step} loss {lv:.4f} "
-                  f"|s| mean {float(sa.mean()):.4f} max {float(sa.max()):.4f}",
-                  flush=True)
-            if step >= 50 and loss0_s4 is not None \
-                    and lv > loss0_s4 * 1.05:
-                msg = (f"LOSS-RISE-ABORT stage=S4 step={step} "
-                       f"loss0={loss0_s4:.4f} loss={lv:.4f}")
-                print(msg, flush=True)
-                raise RuntimeError(msg)
+            print(f"  S4 step {step} loss {float(loss):.4f} "
+                  f"|s| mean {float(sa.mean()):.4f} "
+                  f"max {float(sa.max()):.4f}", flush=True)
+    with torch.no_grad():
+        dv = float(data_term())
+    if dv < best[0]:
+        best = (dv, steps, s.detach().clone())
+    if best[2] is not None:
+        with torch.no_grad():
+            s.copy_(best[2])
+    print(f"  S4-DONE best data term {best[0]:.4f} @step {best[1]} "
+          f"(best state restored)", flush=True)
     state = dict(state)
     state["scalar_offsets"] = s.detach()
-    state["poses"] = [p.detach() for p in poses]
-    state["orients"] = [o.detach() for o in orients]
-    state["cams"] = [c.detach() for c in cams]
-    for v in views:
-        v["_cam"] = state["cams"][v["idx"]]
     return state
-
-# ---------------- per-view metrics (stage-1 variant of gate's) ----------------
 
 def view_metrics_s1(model, faces, state, view, device):
     """Full + below-neck IoU for one view under the fitted state
@@ -1656,7 +1770,8 @@ def device_current():
 
 # ---------------- S5b: leave-one-profile-out ----------------
 
-def stage_lovo(model, faces, views, workdir, device, height_m, steps=150):
+def stage_lovo(model, faces, views, workdir, device, height_m, steps=150,
+               anchor=None):
     """Hold out the side hero (the profile the gate could not
     predict), refit S3 briefly without it, then fit ONLY its
     pose/camera against the held-out shape and score the prediction —
@@ -1671,9 +1786,9 @@ def stage_lovo(model, faces, views, workdir, device, height_m, steps=150):
     for i, v in enumerate(rest):
         v["idx"] = i
     print(f"LOVO hold out {sv['file']} (profile)", flush=True)
-    state = fit_joint(model, faces, rest, device, steps_a=steps,
-                      steps_b=max(50, steps // 2), anchor=None,
-                      height_m=height_m)
+    state = fit_views_per_view(model, faces, rest, device,
+                               steps=steps + max(50, steps // 2),
+                               anchor=anchor, height_m=height_m)
     import torch as _t
     pose = _t.zeros(1, 63, device=device, requires_grad=True)
     orient = _t.zeros(1, 3, device=device, requires_grad=True)
@@ -1685,6 +1800,7 @@ def stage_lovo(model, faces, views, workdir, device, height_m, steps=150):
     opt = _t.optim.Adam([pose, orient, cam], lr=0.02)
     tgt = _t.tensor(sv["mask512"].astype(np.float32), device=device)
     G = gate()
+    best = (float("inf"), None)
     for _ in range(200):
         opt.zero_grad()
         out = model(betas=state["betas"], global_orient=orient,
@@ -1694,7 +1810,17 @@ def stage_lovo(model, faces, views, workdir, device, height_m, steps=150):
                                  scale=state["g_scale"] * cam[2],
                                  fov=sv["fov"])
         loss = (1 - G.soft_iou(alpha, tgt)) + 0.02 * (pose ** 2).mean()
+        if float(loss) < best[0]:
+            best = (float(loss), (pose.detach().clone(),
+                                  orient.detach().clone(),
+                                  cam.detach().clone()))
         loss.backward(); opt.step()
+    with _t.no_grad():
+        pose.copy_(best[1][0])
+        orient.copy_(best[1][1])
+        cam.copy_(best[1][2])
+    print(f"LOVO solo fit best loss {best[0]:.4f} "
+          f"(best-state restored)", flush=True)
     st2 = {"betas": state["betas"], "poses": [pose.detach()],
            "orients": [orient.detach()], "cams": [cam.detach()],
            "g_scale": state["g_scale"]}
@@ -1712,9 +1838,11 @@ def stage_lovo(model, faces, views, workdir, device, height_m, steps=150):
 
 def print_guards():
     print(f"{MARKER} guards: manifest=on gmof(rho={GMOF_RHO:.0f})=on "
-          f"trust-region=on height-anchor={HEIGHT_M_DEFAULT}m "
+          f"per-view-fit=on best-restore=on "
+          f"height-anchor={HEIGHT_M_DEFAULT}m "
           f"traj-monotone=on outlier(>{OUTLIER_SIGMA}sigma)=on "
           f"offset=canonical-scalar clamp={OFFSET_CLAMP_M}m "
+          f"offsets=gate-pattern-best-restore "
           f"beta-clamp={BETA_CLAMP} silhouette-sigma={SILHOUETTE_SIGMA:g} "
           f"validator=on loss-rise-abort=on", flush=True)
 
@@ -1781,10 +1909,11 @@ def stage_run(args):
               "cameras + zero betas (gate-proven path); the pod "
               "preflight tests the real regressors separately",
               flush=True)
-    print("S3 joint fit", flush=True)
-    state = fit_joint(model, faces, views, device,
-                      steps_a=args.steps_beta, steps_b=args.steps_beta // 2,
-                      anchor=anchor, height_m=height_m)
+    print("S3 per-view fit (V8)", flush=True)
+    state = fit_views_per_view(model, faces, views, device,
+                               steps=args.steps_beta
+                               + args.steps_beta // 2,
+                               anchor=anchor, height_m=height_m)
     if any("init_pose" in v for v in views):
         print("INIT-POSE-NOTE sidecar body_pose values initialized "
               "the S3 poses (body-space, camera-independent); "
@@ -1811,7 +1940,7 @@ def stage_run(args):
                         steps=args.steps_off)
     if args.lovo_steps > 0:
         stage_lovo(model, faces, views, workdir, device, height_m,
-                   steps=args.lovo_steps)
+                   steps=args.lovo_steps, anchor=anchor)
     vres, metrics = stage_export(model, faces, state, views, workdir,
                                  conf, validator_path=args.validator)
     metrics["sidecars"] = {"keypoints": kp_path if kp_sidecar else None,
@@ -1906,8 +2035,8 @@ def stage_synth(args):
     # The synth masks were rendered with the identity cam
     # (dtx=dty=0, scale=1.0, fov=FOV_DEFAULT), so the true joints are
     # projected with that same camera; seeded 2.0px gaussian noise
-    # keeps it deterministic. _cam/_g/fov/azim are set by fit_joint
-    # at fit time exactly as in the real ingest path.
+    # keeps it deterministic. _cam/_g/fov/azim are set by
+    # fit_views_per_view at fit time, as in the real ingest path.
     smplx_idx = [sd for _, sd in COCO_TO_SMPLX]
     kp_rng = np.random.RandomState(1234)
     kp_conf = np.array([0.45 if sd in (20, 21, 7, 8) else 0.9
@@ -1935,11 +2064,14 @@ def stage_synth(args):
         print("SYNTH-ANCHOR on (noise sigma 0.30/0.10)", flush=True)
     else:
         print("SYNTH-ANCHOR off", flush=True)
-    state = fit_joint(model, faces, views, device, steps_a=args.synth_steps,
-                      steps_b=args.synth_steps // 2, anchor=anchor_betas,
-                      height_m=HEIGHT_M_DEFAULT,
-                      sigma_start=args.sigma_start,
-                      sigma_end=args.sigma_end)
+    if args.sigma_start is not None or args.sigma_end is not None:
+        print("SYNTH-NOTE sigma anneal retired in V8 (the per-view "
+              "stage runs the calibrated fixed sigma)", flush=True)
+    state = fit_views_per_view(model, faces, views, device,
+                               steps=args.synth_steps
+                               + args.synth_steps // 2,
+                               anchor=anchor_betas,
+                               height_m=HEIGHT_M_DEFAULT)
     conf = compute_coverage(model, faces, state, views, device)
     state = fit_offsets(model, faces, state, views, device, conf,
                         steps=args.synth_steps)
@@ -1970,11 +2102,15 @@ def stage_synth(args):
     surf_d = np.linalg.norm(verts_hat - verts_true, axis=1) * 1000.0
     surf_mean = float(surf_d.mean())
     surf_rmse = float(np.sqrt((surf_d ** 2).mean()))
+    anchor_mean30_s = "NA"
+    if anchor_betas is not None:
+        a30 = np.abs(anchor_betas[:30] - betas_true[:30]).mean()
+        anchor_mean30_s = f"{float(a30):.3f}"
     print(f"SYNTH-RECOVERY beta max|err| {b_err:.3f} | "
           f"beta mean|err|30 {b_mean30:.3f} | offset RMSE "
           f"{s_rmse_mm:.1f} mm | chest circumference err {chest_s} cm | "
           f"surface mean {surf_mean:.1f} mm | surface RMSE "
-          f"{surf_rmse:.1f} mm",
+          f"{surf_rmse:.1f} mm | anchor mean30 {anchor_mean30_s}",
           flush=True)
     os.makedirs(args.work, exist_ok=True)
     faces_np = faces.cpu().numpy()
