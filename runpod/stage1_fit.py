@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# STAGE1-FIT-V2 — MYAI measured-body STAGE-1 scaffold fit.
+# STAGE1-FIT-V3 — MYAI measured-body STAGE-1 scaffold fit.
 # Implements STAGE1_FITTER_DESIGN.md (S0-S5) on top of the GATE-FIT-V8
 # machinery (gate_fit.py is imported lazily and NEVER modified):
 #   S0 ingest: manifest-driven views, gate-proven mask prep, keypoints
@@ -32,10 +32,11 @@
 # selftest` runs on plain CPU python (no CUDA, no smplx, no torch).
 import argparse, json, math, os, sys
 
-MARKER = "STAGE1-FIT-V2"
+MARKER = "STAGE1-FIT-V3"
 HEIGHT_M_DEFAULT = 1.6256          # David-supplied (5 ft 4 in), Oct 18, 2026
 GMOF_RHO = 100.0                   # SMPLify-X lineage (design: Values)
 OFFSET_CLAMP_M = 0.15              # design hard clamp on scalar offsets
+BETA_CLAMP = 2.5                   # physical bound on shape betas (hard clamp)
 OUTLIER_SIGMA = 2.5                # design outlier-view rejection rule
 SIGMA_FLOOR = 0.02                 # documented floor so a tight MAD can't mass-drop
 RENDER_SIZE = 512
@@ -100,6 +101,10 @@ def fuse_betas(beta_list, weights=None):
 def clamp_offsets_np(s, limit=OFFSET_CLAMP_M):
     import numpy as np
     return np.clip(np.asarray(s, dtype=np.float64), -limit, limit)
+
+def clamp_betas_np(x, limit=BETA_CLAMP):
+    import numpy as np
+    return np.clip(np.asarray(x, dtype=np.float64), -limit, limit)
 
 def mesh_height_np(verts):
     import numpy as np
@@ -536,7 +541,10 @@ def selftest():
     assert np.allclose(disp, 0.05, atol=1e-9), disp[:3]
     c = clamp_offsets_np(np.array([-0.3, 0.05, 0.42]))
     assert c[0] == -0.15 and c[1] == 0.05 and c[2] == 0.15, c
+    cb = clamp_betas_np(np.array([-3.5, 0.7, 2.5]))
+    assert cb[0] == -2.5 and cb[1] == 0.7 and cb[2] == 2.5, cb
     print("SELFTEST scalar-offsets OK")
+    print("SELFTEST betas-clamp OK")
     # 4. height-scale solve on synthetic verts
     Vh = np.array([[0, 0, 0], [0.2, 2.0, 0], [0.1, 1.0, 0.3]])
     s = solve_height_scale(mesh_height_np(Vh), 1.6256)
@@ -598,8 +606,9 @@ def selftest():
     assert tape["chest"]["circumference_m"] > tape["waist"]["circumference_m"]
     assert abs(tape["height_m"] - 1.7) < 0.05, tape["height_m"]
     print("SELFTEST tape OK")
-    print(f"SELFTEST-OK {MARKER} manifest/gmof/offsets/height/trajectory/"
-          f"fusion/outlier/keypoints/validator/tape verified torch-free")
+    print(f"SELFTEST-OK {MARKER} manifest/gmof/offsets/betas-clamp/"
+          f"height/trajectory/fusion/outlier/keypoints/validator/tape "
+          f"verified torch-free")
 
 # ---------------- torch rendering (gate-derived, fov-parameterized) ----------------
 # render_alpha / project_points / aligned_iou / init_cam_measured below
@@ -1136,6 +1145,10 @@ def fit_joint(model, faces, views, device, steps_a=250, steps_b=150,
         with torch.no_grad():
             betas.copy_(torch.tensor(anchor, device=device,
                                      dtype=betas.dtype).reshape(1, -1))
+    def clamp_betas():
+        with torch.no_grad():
+            betas.clamp_(-BETA_CLAMP, BETA_CLAMP)
+    clamp_betas()  # stage entry: anchor or zero betas start in bounds
     poses = []
     for v in views:
         p0 = torch.zeros(1, 63, device=device)
@@ -1196,7 +1209,7 @@ def fit_joint(model, faces, views, device, steps_a=250, steps_b=150,
             out = model(betas=betas, global_orient=orients[i],
                         body_pose=poses[i], return_verts=True)
             loss = loss + stage_loss(i, out, 1.0, False)
-        loss.backward(); opt.step(); clamp_cams()
+        loss.backward(); opt.step(); clamp_betas(); clamp_cams()
         if step % 50 == 0:
             print(f"  S3-A step {step} loss {float(loss):.4f}", flush=True)
     # dead-view guard (gate pattern): solo refit for collapsed views
@@ -1254,7 +1267,7 @@ def fit_joint(model, faces, views, device, steps_a=250, steps_b=150,
             out = model(betas=betas, global_orient=orients[i],
                         body_pose=poses[i], return_verts=True)
             loss = loss + stage_loss(i, out, g_scale, True)
-        loss.backward(); opt.step(); clamp_cams_b()
+        loss.backward(); opt.step(); clamp_betas(); clamp_cams_b()
         if step % 50 == 0:
             print(f"  S3-B step {step} loss {float(loss):.4f}", flush=True)
     state = {"betas": betas.detach(),
@@ -1606,6 +1619,7 @@ def print_guards():
           f"trust-region=on height-anchor={HEIGHT_M_DEFAULT}m "
           f"traj-monotone=on outlier(>{OUTLIER_SIGMA}sigma)=on "
           f"offset=canonical-scalar clamp={OFFSET_CLAMP_M}m "
+          f"beta-clamp={BETA_CLAMP} "
           f"validator=on", flush=True)
 
 def stage_run(args):
@@ -1741,9 +1755,11 @@ def stage_synth(args):
     rng = np.random.RandomState(7)
     betas_true = np.clip(rng.randn(100) * 0.7, -1.5, 1.5)
     with torch.no_grad():
-        base = model(betas=torch.tensor(betas_true, device=device,
-                                        dtype=torch.float32).reshape(1, -1),
-                     return_verts=True).vertices[0]
+        out_true = model(betas=torch.tensor(betas_true, device=device,
+                                            dtype=torch.float32).reshape(1, -1),
+                         return_verts=True)
+        base = out_true.vertices[0]
+        joints_true = out_true.joints[0].cpu().numpy()
     base_np = base.cpu().numpy()
     nrm_np = vertex_normals_np(base_np, faces.cpu().numpy())
     s_true = 0.035 * np.sin(3.0 * base_np[:, 1]) * np.cos(2.0 * base_np[:, 0])
@@ -1763,6 +1779,31 @@ def stage_synth(args):
                       "mask512": (a > 0.5).cpu().numpy(),
                       "keypoints": None})
         print(f"SYNTH-VIEW azim {az:.0f} mask ready", flush=True)
+    # DWPose-like keypoints from the TRUE body, in the exact format
+    # keypoint_term consumes: (K,3) [x512, y512, conf] over
+    # COCO_TO_SMPLX pairs (what load_keypoints_for_view returns).
+    # The synth masks were rendered with the identity cam
+    # (dtx=dty=0, scale=1.0, fov=FOV_DEFAULT), so the true joints are
+    # projected with that same camera; seeded 2.0px gaussian noise
+    # keeps it deterministic. _cam/_g/fov/azim are set by fit_joint
+    # at fit time exactly as in the real ingest path.
+    smplx_idx = [sd for _, sd in COCO_TO_SMPLX]
+    kp_rng = np.random.RandomState(1234)
+    kp_conf = np.array([0.45 if sd in (20, 21, 7, 8) else 0.9
+                        for _, sd in COCO_TO_SMPLX])
+    for v in views:
+        with torch.no_grad():
+            scr = project_points_fov(
+                torch.tensor(joints_true[smplx_idx], device=device,
+                             dtype=torch.float32),
+                v["azim"], device, dtx=0.0, dty=0.0, scale=1.0,
+                fov=FOV_DEFAULT)
+        xy = scr[:, :2].cpu().numpy()
+        xy = xy + kp_rng.randn(len(smplx_idx), 2) * 2.0
+        v["keypoints"] = np.concatenate([xy, kp_conf[:, None]], axis=1)
+    print(f"SYNTH-KEYPOINTS {len(views)} views: true-joint projections + "
+          f"2.0px seeded noise, conf 0.9 (0.45 wrists/ankles)",
+          flush=True)
     state = fit_joint(model, faces, views, device, steps_a=args.synth_steps,
                       steps_b=args.synth_steps // 2, anchor=None,
                       height_m=HEIGHT_M_DEFAULT)
@@ -1794,6 +1835,15 @@ def stage_synth(args):
           f"{s_rmse_mm:.1f} mm | chest circumference err "
           f"{chest_err if chest_err is None else round(chest_err, 2)} cm",
           flush=True)
+    os.makedirs(args.work, exist_ok=True)
+    faces_np = faces.cpu().numpy()
+    true_ply = os.path.join(args.work, "synth_true.ply")
+    write_ply(true_ply, verts_true.astype(np.float32), faces_np,
+              vertex_normals_np(verts_true, faces_np).astype(np.float32))
+    rec_ply = os.path.join(args.work, "synth_recovered.ply")
+    write_ply(rec_ply, verts_hat.astype(np.float32), faces_np,
+              vertex_normals_np(verts_hat, faces_np).astype(np.float32))
+    print(f"SYNTH-PLY true={true_ply} recovered={rec_ply}", flush=True)
     print("SYNTH-DONE", flush=True)
 
 # ---------------- main ----------------
