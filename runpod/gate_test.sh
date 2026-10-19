@@ -1,5 +1,5 @@
 #!/bin/bash
-# GATE-TEST-V2 — MYAI measured-body gate test (plan GATE_TEST_PLAN.md).
+# GATE-TEST-V3 — MYAI measured-body gate test (plan GATE_TEST_PLAN.md).
 # Builds a dedicated venv, proves every precondition, then runs
 # gate_fit.py: segment 7 generated-set candidates -> select 4 heroes
 # by measured azimuth -> joint SMPL-X silhouette fit (shared shape +
@@ -7,13 +7,13 @@
 # Run ON THE POD, detached:
 #   setsid nohup bash /workspace/gate_test.sh > /workspace/gate_test.log 2>&1 < /dev/null &
 set -u
-echo "GATE-TEST-V2 starting $(date -u)"
+echo "GATE-TEST-V3 starting $(date -u)"
 cd /workspace
 VENV=/workspace/gatefit-venv
 WORK=/workspace/gate_test
 IN=/workspace/ComfyUI/input/gate_candidates
 set -x
-( while :; do cp -f /workspace/gate_test.log /workspace/ComfyUI/output/gate_test_log_copy.txt 2>/dev/null; sleep 60; done ) &
+( while :; do cp -f /workspace/gate_test.log /workspace/ComfyUI/output/gate_test_log_copy.txt 2>/dev/null; sleep 20; done ) &
 MIRROR_PID=$!
 trap 'kill $MIRROR_PID 2>/dev/null' EXIT
 echo "== ENV DUMP"
@@ -48,7 +48,7 @@ else
   exit 1
 fi
 echo "-- metric selftest (synthetic masks)"
-if "$VENV/bin/python" /workspace/gate_fit.py selftest; then
+if "$VENV/bin/python" -u /workspace/gate_fit.py selftest; then
   echo "selftest OK"
 else
   echo "GATE-FAIL preflight: metric selftest failed"
@@ -69,5 +69,5 @@ fi
 echo "PREFLIGHT-OK - every precondition verified"
 
 echo "STAGE-BEGIN GATE RUN at $(date -u +%s) $(date -u)"
-"$VENV/bin/python" /workspace/gate_fit.py run --input "$IN" --work "$WORK"
+"$VENV/bin/python" -u /workspace/gate_fit.py run --input "$IN" --work "$WORK"
 echo "GATE-TEST-SCRIPT-DONE at $(date -u)"
