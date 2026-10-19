@@ -1693,12 +1693,12 @@ def fit_offsets(model, faces, state, views, device, conf, steps=600):
           f"(best state restored)", flush=True)
     state = dict(state)
     state["vector_offsets"] = off.detach()
-    state["poses"] = {**state["poses"],
-                      **{k: t.detach() for k, t in poses.items()}}
-    state["orients"] = {**state["orients"],
-                        **{k: t.detach() for k, t in orients.items()}}
-    state["cams"] = {**state["cams"],
-                     **{k: t.detach() for k, t in cams.items()}}
+    for key, src in (("poses", poses), ("orients", orients),
+                     ("cams", cams)):
+        merged = list(state[key])
+        for k, t in src.items():
+            merged[k] = t.detach()
+        state[key] = merged
     return state
 
 def view_metrics_s1(model, faces, state, view, device):
