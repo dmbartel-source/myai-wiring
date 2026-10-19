@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ANCHOR-PRODUCER-V2 — MYAI stage-1 S2 anchor producer (SMPLest-X arm).
+# ANCHOR-PRODUCER-V3 — MYAI stage-1 S2 anchor producer (SMPLest-X arm).
 # Runs under the SMPLest-X venv python ON THE POD. For every image in
 # the views dir: YOLOv8x person detection (ultralytics, conf 0.5,
 # largest box) -> SMPLest-X regression through the pinned repo
@@ -18,7 +18,7 @@
 # first on the pod and adapt that one function to what it prints.
 import argparse, json, os, sys
 
-MARKER = "ANCHOR-PRODUCER-V2"
+MARKER = "ANCHOR-PRODUCER-V3"
 SOURCE_TAG = "smplest-x-h"
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
 WEIGHT_MIN, WEIGHT_MAX = 0.05, 1.0
@@ -177,6 +177,13 @@ def _load_model(repo):
                 "log_dir": os.path.join(
                     repo, "outputs", "anchor_producer", "log")}})
     cfg.prepare_log()
+    # human_models.SMPLX is a singleton whose FIRST construction
+    # must pass the model path (human_models.py: assert config is
+    # not None); main/inference.py constructs it before the Tester
+    # for exactly this reason — the model's own layer deep-copies
+    # the singleton's neutral layer.
+    from human_models.human_models import SMPLX
+    SMPLX(cfg.model.human_model_path)
     tester = Tester(cfg)
     tester._make_model()
     _MODEL_CACHE["tester"] = tester
