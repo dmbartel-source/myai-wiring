@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# GATE-FIT-V2 — MYAI measured-body GATE TEST (plan: GATE_TEST_PLAN.md).
+# GATE-FIT-V3 — MYAI measured-body GATE TEST (plan: GATE_TEST_PLAN.md).
 # Question: can ONE shared SMPL-X shape + per-vertex offsets match the
 # silhouettes of 4 hero views (front/side/back/three-quarter) at once?
 # Stages: segment -> select (azimuth grid) -> fit (beta, then offsets)
@@ -319,40 +319,93 @@ def view_metrics(model, faces, state, view, device, size=512):
 
 # ---------------- stage: select heroes by azimuth ----------------
 
+def aligned_iou(verts, faces, mask256, azim, device):
+    """Render the mean body at azim, then iteratively align (scale +
+    camera shift) by matching the rendered silhouette bbox to the
+    mask bbox — outcomes are MEASURED each round, so camera sign
+    conventions cannot silently poison the score the way V2's fixed
+    camera did. Returns (best_iou, cam dict)."""
+    import torch, numpy as np
+    tgt = torch.tensor(mask256.astype(np.float32), device=device)
+    rows = np.nonzero(mask256.any(axis=1))[0]
+    cols = np.nonzero(mask256.any(axis=0))[0]
+    mh = rows.max() - rows.min() + 1
+    mcx = (cols.min() + cols.max()) / 2.0
+    mcy = (rows.min() + rows.max()) / 2.0
+    scale, dtx, dty = 1.0, 0.0, 0.0
+    best = (-1.0, None)
+    world_per_px = (2 * 3.2 * math.tan(math.radians(19.0))) / 256.0
+    sx, sy = 1.0, -1.0  # shift sign conventions, self-corrected below
+    prev_errx = prev_erry = None
+    for it in range(4):
+        with torch.no_grad():
+            alpha = render_alpha(verts, faces, azim, device, size=256,
+                                 dtx=dtx, dty=dty, scale=scale, sigma=1e-3)
+        sil = (alpha > 0.5).cpu().numpy()
+        v = float(soft_iou(alpha, tgt))
+        if v > best[0]:
+            best = (v, {"scale": scale, "dtx": dtx, "dty": dty})
+        r2 = np.nonzero(sil.any(axis=1))[0]
+        c2 = np.nonzero(sil.any(axis=0))[0]
+        if r2.size == 0:
+            scale *= 1.3
+            continue
+        rh = r2.max() - r2.min() + 1
+        rcx = (c2.min() + c2.max()) / 2.0
+        rcy = (r2.min() + r2.max()) / 2.0
+        scale *= float(mh) / float(rh)
+        errx, erry = mcx - rcx, mcy - rcy
+        if prev_errx is not None and abs(errx) > abs(prev_errx):
+            sx = -sx
+        if prev_erry is not None and abs(erry) > abs(prev_erry):
+            sy = -sy
+        dtx += sx * errx * world_per_px
+        dty += sy * erry * world_per_px
+        prev_errx, prev_erry = errx, erry
+    return best
+
 def stage_select(model, faces, indir, maskdir, device):
     import torch, numpy as np
     from PIL import Image
     cands = []
+    with torch.no_grad():
+        mean_verts = model(betas=torch.zeros(1, 100, device=device),
+                           return_verts=True).vertices[0]
     for name in CANDIDATES:
         mp = os.path.join(maskdir, os.path.splitext(name)[0] + "_mask.png")
         if not os.path.exists(mp):
             continue
         mask = np.array(Image.open(mp)) > 0
         sq, _ = prep_mask(mask)
-        best = (-1.0, None)
-        with torch.no_grad():
-            out = model(betas=torch.zeros(1, 100, device=device), return_verts=True)
-            verts = out.vertices[0]
-            for az in range(0, 360, 15):
-                alpha = render_alpha(verts, faces, float(az), device, size=256)
-                v = float(soft_iou(alpha, torch.tensor(sq[::2, ::2].astype(np.float32), device=device)))
-                if v > best[0]:
-                    best = (v, float(az))
-        cands.append({"name": name, "azim": best[1], "iou256": best[0], "mask512": sq})
-        print(f"SELECT {name} azim~{best[1]:.0f} meanbody-IoU {best[0]:.3f}", flush=True)
+        m256 = sq[::2, ::2]
+        best = (-1.0, None, None)
+        for az in range(0, 360, 15):
+            v, cam = aligned_iou(mean_verts, faces, m256, float(az), device)
+            if v > best[0]:
+                best = (v, float(az), cam)
+        cands.append({"name": name, "azim": best[1], "iou": best[0], "mask512": sq})
+        print(f"SELECT {name} azim~{best[1]:.0f} aligned-IoU {best[0]:.3f}", flush=True)
+    used = set()
     heroes = {}
     for slot, target in ANGLE_SLOTS.items():
         def dist(c):
             d = abs(c["azim"] - target) % 360.0
             return min(d, 360.0 - d)
-        pool = sorted(cands, key=dist)
+        pool = sorted((c for c in cands if c["name"] not in used), key=dist)
         pick = pool[0]
+        used.add(pick["name"])
         heroes[slot] = {"name": pick["name"], "azim": pick["azim"],
-                        "slot_target": target, "azim_off": dist(pick)}
-        print(f"HERO {slot}: {pick['name']} (azim {pick['azim']:.0f}, off {dist(pick):.0f})")
-    by_name = {c["name"]: c for c in cands}
-    for slot, h in heroes.items():
-        h["mask512"] = by_name[h["name"]]["mask512"]
+                        "slot_target": target, "azim_off": dist(pick),
+                        "mask512": pick["mask512"], "sel_iou": pick["iou"]}
+        print(f"HERO {slot}: {pick['name']} (azim {pick['azim']:.0f}, off {dist(pick):.0f}, aligned-IoU {pick['iou']:.3f})", flush=True)
+    side = heroes["side"]
+    if side["azim_off"] > 30:
+        print(f"GATE-FAIL select: no true side view among candidates (best side pick {side['name']} is {side['azim_off']:.0f} deg off side) — the bust-projection check cannot run")
+        sys.exit(1)
+    worst = min(h["sel_iou"] for h in heroes.values())
+    if worst < 0.30:
+        print(f"GATE-FAIL select: worst hero aligned-IoU {worst:.3f} < 0.30 — selection measurement untrustworthy, fit would be built on noise")
+        sys.exit(1)
     return heroes
 
 # ---------------- stage: run everything ----------------
