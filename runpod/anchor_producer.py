@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# ANCHOR-PRODUCER-V1 — MYAI stage-1 S2 anchor producer (SMPLest-X arm).
+# ANCHOR-PRODUCER-V2 — MYAI stage-1 S2 anchor producer (SMPLest-X arm).
 # Runs under the SMPLest-X venv python ON THE POD. For every image in
 # the views dir: YOLOv8x person detection (ultralytics, conf 0.5,
 # largest box) -> SMPLest-X regression through the pinned repo
@@ -18,7 +18,7 @@
 # first on the pod and adapt that one function to what it prints.
 import argparse, json, os, sys
 
-MARKER = "ANCHOR-PRODUCER-V1"
+MARKER = "ANCHOR-PRODUCER-V2"
 SOURCE_TAG = "smplest-x-h"
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
 WEIGHT_MIN, WEIGHT_MAX = 0.05, 1.0
@@ -139,47 +139,80 @@ def run_model(repo, image_path, bbox):
     a Tester class, and the stock paths persist only overlay
     renders, never the parameters.
 
-    # ADAPT-AFTER-PROBE: the exact Tester construction/call for
-    # checkout fdebd88 (constructor args, checkpoint loading, the
-    # input transform, and how ONE still image plus an EXTERNAL
-    # bbox enter — the stock path detects and splits video frames
-    # itself) is confirmed by --probe-only output on the pod.
-    # Adapt ONLY this function: construct the Tester/model as
-    # main/inference.py does, run the single image, capture the
-    # forward dict, and return
-    #   b, p, w = extract_params(out)
-    #   return {"betas": b, "body_pose": p, "betas_width": w}
-    # Everything downstream (writer, diagnostics) is contract-fixed.
+    # ADAPTED (Oct 19, 2026, Noor): wired from main/inference.py's
+    # own code at fdebd88, read on the pod — Config.load_config on
+    # pretrained_models/smplest_x_h/config_base.py + checkpoint
+    # update, Tester(cfg)._make_model(), and the frame loop's exact
+    # preprocessing (utils.data_utils process_bbox /
+    # generate_patch_image, ToTensor()/255, model({'img': img},
+    # {}, {}, 'test')). The bbox comes from this producer's own
+    # YOLO pass (the repo's detector, same config).
     """
-    import inspect
+    return _run_model_impl(repo, image_path, bbox)
+
+
+_MODEL_CACHE = {}
+
+
+def _load_model(repo):
+    """Construct the SMPLest-X Tester + model exactly as
+    main/inference.py does (checkout fdebd88): Config.load_config
+    on pretrained_models/smplest_x_h/config_base.py, update with
+    the checkpoint path, Tester(cfg), tester._make_model().
+    Cached: construction loads the 8.2 GB checkpoint once."""
+    if "tester" in _MODEL_CACHE:
+        return _MODEL_CACHE["tester"], _MODEL_CACHE["cfg"]
+    import os
+    os.chdir(repo)  # repo config resolves ./human_models etc.
     if repo not in sys.path:
         sys.path.insert(0, repo)
-    Tester = None
-    errors = []
-    for modname in ("main.inference", "main.trainer"):
-        try:
-            mod = __import__(modname, fromlist=["Tester"])
-            Tester = getattr(mod, "Tester", None)
-            if Tester is not None:
-                break
-        except Exception as e:  # repo import needs its venv; record
-            errors.append(f"{modname}: {e}")
-    if Tester is None:
-        raise RuntimeError(
-            "ADAPT-AFTER-PROBE: no Tester class importable from "
-            f"main.inference / main.trainer ({errors}); run "
-            "--probe-only and wire run_model() to the printed API")
-    try:
-        sig = str(inspect.signature(Tester.__init__))
-    except Exception:
-        sig = "(signature unavailable)"
-    raise RuntimeError(
-        f"ADAPT-AFTER-PROBE: Tester located "
-        f"({Tester.__module__}.Tester{sig}) but its single-image "
-        f"call sequence is not wired yet — adapt run_model() in "
-        f"anchor_producer.py from --probe-only output, then capture "
-        f"the forward dict and return extract_params(out) as "
-        f"{{'betas': b, 'body_pose': p, 'betas_width': w}}")
+    from main.config import Config
+    from main.base import Tester
+    cfg = Config.load_config(
+        "./pretrained_models/smplest_x_h/config_base.py")
+    cfg.update_config({
+        "model": {"pretrained_model_path":
+                  "./pretrained_models/smplest_x_h/smplest_x_h.pth.tar"},
+        "log": {"exp_name": "anchor_producer",
+                "log_dir": os.path.join(
+                    repo, "outputs", "anchor_producer", "log")}})
+    cfg.prepare_log()
+    tester = Tester(cfg)
+    tester._make_model()
+    _MODEL_CACHE["tester"] = tester
+    _MODEL_CACHE["cfg"] = cfg
+    return tester, cfg
+
+
+def _run_model_impl(repo, image_path, bbox):
+    """Single-image regression mirroring main/inference.py's
+    frame loop (fdebd88): load_img -> process_bbox (cfg ratio) ->
+    generate_patch_image -> ToTensor()/255 -> tester.model(
+    {'img': img}, {}, {}, 'test') -> extract_params(out)."""
+    import numpy as np
+    import torch
+    import torchvision.transforms as transforms
+    tester, cfg = _load_model(repo)
+    from utils.data_utils import (load_img, process_bbox,
+                                  generate_patch_image)
+    original_img = load_img(image_path)
+    img_h, img_w = original_img.shape[:2]
+    x0, y0, x1, y1 = (float(v) for v in bbox)
+    xywh = np.zeros((4))
+    xywh[0], xywh[1] = x0, y0
+    xywh[2], xywh[3] = abs(x1 - x0), abs(y1 - y0)
+    bb = process_bbox(bbox=xywh, img_width=img_w, img_height=img_h,
+                      input_img_shape=cfg.model.input_img_shape,
+                      ratio=getattr(cfg.data, "bbox_ratio", 1.25))
+    img, _, _ = generate_patch_image(
+        cvimg=original_img, bbox=bb, scale=1.0, rot=0.0,
+        do_flip=False, out_shape=cfg.model.input_img_shape)
+    img = transforms.ToTensor()(img.astype(np.float32)) / 255
+    img = img.cuda()[None, :, :, :]
+    with torch.no_grad():
+        out = tester.model({"img": img}, {}, {}, "test")
+    b, p, w = extract_params(out)
+    return {"betas": b, "body_pose": p, "betas_width": w}
 
 
 # ---------------- probe mode (on-pod adaptation aid) ----------------
