@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# STAGE1-FIT-V3 — MYAI measured-body STAGE-1 scaffold fit.
+# STAGE1-FIT-V4 — MYAI measured-body STAGE-1 scaffold fit.
 # Implements STAGE1_FITTER_DESIGN.md (S0-S5) on top of the GATE-FIT-V8
 # machinery (gate_fit.py is imported lazily and NEVER modified):
 #   S0 ingest: manifest-driven views, gate-proven mask prep, keypoints
@@ -32,7 +32,7 @@
 # selftest` runs on plain CPU python (no CUDA, no smplx, no torch).
 import argparse, json, math, os, sys
 
-MARKER = "STAGE1-FIT-V3"
+MARKER = "STAGE1-FIT-V4"
 HEIGHT_M_DEFAULT = 1.6256          # David-supplied (5 ft 4 in), Oct 18, 2026
 GMOF_RHO = 100.0                   # SMPLify-X lineage (design: Values)
 OFFSET_CLAMP_M = 0.15              # design hard clamp on scalar offsets
@@ -1113,7 +1113,7 @@ def keypoint_term(model_out_joints, view, device, g_scale):
     scr = project_points_fov(pts3d, view["azim"], device,
                              dtx=float(view["_cam"][0]),
                              dty=float(view["_cam"][1]), scale=cam_s,
-                             fov=view["fov"])
+                             fov=view["fov"])[:, :2]
     tgt = torch.tensor(kp[:, :2], device=device, dtype=scr.dtype)
     conf = torch.tensor(kp[:, 2], device=device, dtype=scr.dtype)
     trust = torch.tensor([KP_TRUST[s] for _, s in COCO_TO_SMPLX],
