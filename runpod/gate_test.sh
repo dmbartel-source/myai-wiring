@@ -1,5 +1,5 @@
 #!/bin/bash
-# GATE-TEST-V3 — MYAI measured-body gate test (plan GATE_TEST_PLAN.md).
+# GATE-TEST-V4 — MYAI measured-body gate test (plan GATE_TEST_PLAN.md).
 # Builds a dedicated venv, proves every precondition, then runs
 # gate_fit.py: segment 7 generated-set candidates -> select 4 heroes
 # by measured azimuth -> joint SMPL-X silhouette fit (shared shape +
@@ -7,8 +7,10 @@
 # Run ON THE POD, detached:
 #   setsid nohup bash /workspace/gate_test.sh > /workspace/gate_test.log 2>&1 < /dev/null &
 set -u
-echo "GATE-TEST-V3 starting $(date -u)"
+echo "GATE-TEST-V4 starting $(date -u)"
 cd /workspace
+exec 9>/workspace/gate_test.lock
+if ! flock -n 9; then echo "GATE-ALREADY-RUNNING (lock held) — this launch exits"; exit 0; fi
 VENV=/workspace/gatefit-venv
 WORK=/workspace/gate_test
 IN=/workspace/ComfyUI/input/gate_candidates
