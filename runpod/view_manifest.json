@@ -1,0 +1,367 @@
+{
+ "manifest": "STAGE1-VIEW-MANIFEST-V1",
+ "built": "2026-10-18",
+ "subject_height_m": 1.6256,
+ "view_count": 39,
+ "trajectory_note": "frame_index = extraction order within each source video; per-sequence azimuths are FIT under a smooth monotone trajectory model anchored to the four David-labeled hero azimuths. Whether each video is a uniform full 360 orbit is UNVERIFIED (design unknown U2-adjacent).",
+ "excluded": [
+  "5762.png",
+  "5763.png",
+  "5764.png (never graded by David)",
+  "lib_4707/lib_4700-1/lib_4701 pass-1 picks (ungraded, pending David review)",
+  "template_5812 (composition reference only, not body evidence)"
+ ],
+ "views": [
+  {
+   "file": "lib_5765_f_0001.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5765",
+   "frame_index": 1,
+   "approved_by_david": true,
+   "hero_role": "front",
+   "azimuth_anchor_deg": 0
+  },
+  {
+   "file": "lib_5765_f_0005.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5765",
+   "frame_index": 5,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5765_f_0006.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5765",
+   "frame_index": 6,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5765_f_0007.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5765",
+   "frame_index": 7,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5765_f_0012.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5765",
+   "frame_index": 12,
+   "approved_by_david": true,
+   "hero_role": "side",
+   "azimuth_anchor_deg": 105
+  },
+  {
+   "file": "lib_5765_f_0013.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5765",
+   "frame_index": 13,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5784-3_f_0000.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5784-3",
+   "frame_index": 0,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5784-3_f_0004.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5784-3",
+   "frame_index": 4,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5784-3_f_0007.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5784-3",
+   "frame_index": 7,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5784-3_f_0008.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5784-3",
+   "frame_index": 8,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5784-3_f_0009.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5784-3",
+   "frame_index": 9,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5784-3_f_0010.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5784-3",
+   "frame_index": 10,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5784-3_f_0011.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5784-3",
+   "frame_index": 11,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5784-3_f_0012.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5784-3",
+   "frame_index": 12,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5784-3_f_0016.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5784-3",
+   "frame_index": 16,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5784-3_f_0019.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5784-3",
+   "frame_index": 19,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5817_f_0000.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5817",
+   "frame_index": 0,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5817_f_0001.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5817",
+   "frame_index": 1,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5817_f_0002.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5817",
+   "frame_index": 2,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5817_f_0003.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5817",
+   "frame_index": 3,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5817_f_0005.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5817",
+   "frame_index": 5,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5817_f_0008.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5817",
+   "frame_index": 8,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5817_f_0009.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5817",
+   "frame_index": 9,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5817_f_0011.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5817",
+   "frame_index": 11,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5817_f_0013.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5817",
+   "frame_index": 13,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5817_f_0015.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5817",
+   "frame_index": 15,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5819_f_0000.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5819",
+   "frame_index": 0,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5819_f_0003.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5819",
+   "frame_index": 3,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5819_f_0005.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5819",
+   "frame_index": 5,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5819_f_0006.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5819",
+   "frame_index": 6,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5819_f_0007.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5819",
+   "frame_index": 7,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5819_f_0008.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5819",
+   "frame_index": 8,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5819_f_0010.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5819",
+   "frame_index": 10,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5819_f_0011.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5819",
+   "frame_index": 11,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "lib_5819_f_0012.jpg",
+   "kind": "orbit-frame",
+   "sequence": "5819",
+   "frame_index": 12,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "5760.png",
+   "kind": "still",
+   "sequence": null,
+   "frame_index": null,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "5761.png",
+   "kind": "still",
+   "sequence": null,
+   "frame_index": null,
+   "approved_by_david": true,
+   "hero_role": null,
+   "azimuth_anchor_deg": null
+  },
+  {
+   "file": "5766.png",
+   "kind": "still",
+   "sequence": null,
+   "frame_index": null,
+   "approved_by_david": true,
+   "hero_role": "back",
+   "azimuth_anchor_deg": 180
+  },
+  {
+   "file": "5769.png",
+   "kind": "still",
+   "sequence": null,
+   "frame_index": null,
+   "approved_by_david": true,
+   "hero_role": "three-quarter",
+   "azimuth_anchor_deg": 215
+  }
+ ]
+}
