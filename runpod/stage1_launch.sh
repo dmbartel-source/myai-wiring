@@ -1,5 +1,5 @@
 #!/bin/bash
-# STAGE1-LAUNCH-V12 — stage-1 session launcher (runs DETACHED on the pod).
+# STAGE1-LAUNCH-V13 — stage-1 session launcher (runs DETACHED on the pod).
 # Chain: fetch pinned files -> marker greps -> rtmlib install ->
 # keypoint extraction -> SYNTH GATE (known-body recovery; tolerances
 # below) -> setsid-launch stage1_session.sh. Any failed gate stops the
@@ -10,10 +10,10 @@ LOG=/workspace/stage1_launch.log
 ( while :; do cp -f "$LOG" /workspace/ComfyUI/output/stage1_launch_log_copy.txt 2>/dev/null; sleep 20; done ) &
 MIRROR_PID=$!
 trap 'kill $MIRROR_PID 2>/dev/null' EXIT
-echo "STAGE1-LAUNCH-V12 starting $(date -u)"
+echo "STAGE1-LAUNCH-V13 starting $(date -u)"
 R=https://raw.githubusercontent.com/dmbartel-source/myai-wiring
 dl() { curl -fsSL "$R/$1/runpod/$2" -o "/workspace/$2" || { echo "LAUNCH-FAIL fetch $2"; exit 1; }; }
-dl 3b8da8b4689421ea58b4b6992feb8d0cbbd39fa8 stage1_fit.py
+dl fc3f960e22283e9d696cfd4105869870e929f8ef stage1_fit.py
 dl 885cc23d1fd28bd6facba5ca6c6ac33e2d1b5661 stage1_session.sh
 dl c05725dad25962a1fad90bc509041a2d9418969c extract_keypoints.py
 dl 7aad95e17262c1eea2626d927ca44df235bcfa3f view_manifest.json
