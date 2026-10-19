@@ -1,5 +1,5 @@
 #!/bin/bash
-# STAGE1-LAUNCH-V7 — stage-1 session launcher (runs DETACHED on the pod).
+# STAGE1-LAUNCH-V8 — stage-1 session launcher (runs DETACHED on the pod).
 # Chain: fetch pinned files -> marker greps -> rtmlib install ->
 # keypoint extraction -> SYNTH GATE (known-body recovery; tolerances
 # below) -> setsid-launch stage1_session.sh. Any failed gate stops the
@@ -10,7 +10,7 @@ LOG=/workspace/stage1_launch.log
 ( while :; do cp -f "$LOG" /workspace/ComfyUI/output/stage1_launch_log_copy.txt 2>/dev/null; sleep 20; done ) &
 MIRROR_PID=$!
 trap 'kill $MIRROR_PID 2>/dev/null' EXIT
-echo "STAGE1-LAUNCH-V7 starting $(date -u)"
+echo "STAGE1-LAUNCH-V8 starting $(date -u)"
 R=https://raw.githubusercontent.com/dmbartel-source/myai-wiring
 dl() { curl -fsSL "$R/$1/runpod/$2" -o "/workspace/$2" || { echo "LAUNCH-FAIL fetch $2"; exit 1; }; }
 dl 493a9d976cac9cbec777c8ed3cdba023f74ec2fa stage1_fit.py
@@ -68,6 +68,9 @@ cp -f /workspace/stage1_synth.log /workspace/ComfyUI/output/stage1_synth_log_cop
 REC=$(grep "SYNTH-RECOVERY" /workspace/stage1_synth.log | tail -1)
 echo "synth: $REC"
 [ -n "$REC" ] || { echo "SYNTH-GATE-FAIL: no recovery line — synth log tail follows"; tail -60 /workspace/stage1_synth.log; exit 1; }
+cp -f /workspace/stage1/synth_true.ply /workspace/ComfyUI/output/synth_true.ply 2>/dev/null
+cp -f /workspace/stage1/synth_recovered.ply /workspace/ComfyUI/output/synth_recovered.ply 2>/dev/null
+echo "SYNTH-PLY-COPIED to ComfyUI/output (synth_true.ply, synth_recovered.ply) — copied before the verdict so a FAIL is still inspectable"
 "$VENV/bin/python" - "$REC" <<'PY' || { echo "SYNTH-GATE-FAIL: recovery outside tolerances (chest<=2.0cm, offset RMSE<=20mm, beta mean30<=0.15) — session NOT started"; exit 1; }
 import re, sys
 m = re.search(r"beta max\|err\| ([\d.]+) \| beta mean\|err\|30 ([\d.]+) \| offset RMSE ([\d.]+) mm \| chest circumference err ([\d.]+|None) cm", sys.argv[1])
@@ -77,9 +80,6 @@ ok = beta_mean30 <= 0.15 and rmse <= 20.0 and (chest == "None" or float(chest) <
 print(f"SYNTH-GATE {'PASS' if ok else 'FAIL'} beta_mean30={beta_mean30} beta_max_diag={beta_max} rmse_mm={rmse} chest_cm={chest}")
 sys.exit(0 if ok else 1)
 PY
-cp -f /workspace/stage1/synth_true.ply /workspace/ComfyUI/output/synth_true.ply 2>/dev/null
-cp -f /workspace/stage1/synth_recovered.ply /workspace/ComfyUI/output/synth_recovered.ply 2>/dev/null
-echo "SYNTH-PLY-COPIED to ComfyUI/output (synth_true.ply, synth_recovered.ply)"
 echo "== launching the stage-1 session (detached)"
 setsid nohup bash /workspace/stage1_session.sh > /workspace/stage1.log 2>&1 < /dev/null &
 echo "STAGE1-SESSION-LAUNCHED-DETACHED"
