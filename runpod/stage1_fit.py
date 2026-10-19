@@ -32,7 +32,7 @@
 # selftest` runs on plain CPU python (no CUDA, no smplx, no torch).
 import argparse, json, math, os, sys
 
-MARKER = "STAGE1-FIT-V5"
+MARKER = "STAGE1-FIT-V6"
 HEIGHT_M_DEFAULT = 1.6256          # David-supplied (5 ft 4 in), Oct 18, 2026
 GMOF_RHO = 100.0                   # SMPLify-X lineage (design: Values)
 OFFSET_CLAMP_M = 0.15              # design hard clamp on scalar offsets
@@ -42,6 +42,15 @@ SIGMA_FLOOR = 0.02                 # documented floor so a tight MAD can't mass-
 RENDER_SIZE = 512
 RENDER_DIST = 3.2                  # gate-proven camera distance
 FOV_DEFAULT = 38.0                 # gate-proven field of view (deg)
+SILHOUETTE_SIGMA = 1e-7              # calibrated Oct 19, 2026 (pod probes
+                                     # probe_sigma/2/3): at sigma=1e-4 the
+                                     # soft-silhouette interior alpha caps
+                                     # at ~0.51 against binary targets,
+                                     # biasing every fit outward; at 1e-7
+                                     # soft_iou is 0.911 at the true body
+                                     # and DROPS for perturbed (0.892),
+                                     # +3% (0.867) and -3% (0.854) bodies:
+                                     # the truth is the strict maximum.
 FOV_GRID = (30.0, 38.0, 46.0)      # measured per-sequence focal candidates
 NUM_VERTS = 10475                  # SMPL-X topology
 # COCO-17 -> SMPL-X body-joint indices (first 22 = SMPL kinematic order;
@@ -619,7 +628,7 @@ def selftest():
 
 def render_alpha_fov(verts, faces, azim, device, size=RENDER_SIZE,
                      dist=RENDER_DIST, dtx=0.0, dty=0.0, scale=1.0,
-                     fov=FOV_DEFAULT, sigma=1e-4):
+                     fov=FOV_DEFAULT, sigma=SILHOUETTE_SIGMA):
     import torch
     from pytorch3d.renderer import (FoVPerspectiveCameras, MeshRasterizer,
         MeshRenderer, RasterizationSettings, SoftSilhouetteShader,
@@ -681,7 +690,7 @@ def aligned_iou_fov(verts, faces, mask, azim, device, size=256,
         with torch.no_grad():
             alpha = render_alpha_fov(verts, faces, azim, device, size=size,
                                      dtx=dtx, dty=dty, scale=scale,
-                                     fov=fov, sigma=1e-3)
+                                     fov=fov, sigma=SILHOUETTE_SIGMA)
         sil = (alpha > 0.5).cpu().numpy()
         v = float(G.soft_iou(alpha, tgt))
         if v > best[0]:
@@ -1619,7 +1628,7 @@ def print_guards():
           f"trust-region=on height-anchor={HEIGHT_M_DEFAULT}m "
           f"traj-monotone=on outlier(>{OUTLIER_SIGMA}sigma)=on "
           f"offset=canonical-scalar clamp={OFFSET_CLAMP_M}m "
-          f"beta-clamp={BETA_CLAMP} "
+          f"beta-clamp={BETA_CLAMP} silhouette-sigma={SILHOUETTE_SIGMA:g} "
           f"validator=on", flush=True)
 
 def stage_run(args):
@@ -1848,9 +1857,14 @@ def stage_synth(args):
         chest_err = abs(tape_t["chest"]["circumference_m"]
                         - tape_h["chest"]["circumference_m"]) * 100.0
     chest_s = "None" if chest_err is None else f"{chest_err:.2f}"
+    surf_d = np.linalg.norm(verts_hat - verts_true, axis=1) * 1000.0
+    surf_mean = float(surf_d.mean())
+    surf_rmse = float(np.sqrt((surf_d ** 2).mean()))
     print(f"SYNTH-RECOVERY beta max|err| {b_err:.3f} | "
           f"beta mean|err|30 {b_mean30:.3f} | offset RMSE "
-          f"{s_rmse_mm:.1f} mm | chest circumference err {chest_s} cm",
+          f"{s_rmse_mm:.1f} mm | chest circumference err {chest_s} cm | "
+          f"surface mean {surf_mean:.1f} mm | surface RMSE "
+          f"{surf_rmse:.1f} mm",
           flush=True)
     os.makedirs(args.work, exist_ok=True)
     faces_np = faces.cpu().numpy()
