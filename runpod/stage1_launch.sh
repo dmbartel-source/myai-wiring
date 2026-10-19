@@ -1,5 +1,5 @@
 #!/bin/bash
-# STAGE1-LAUNCH-V11 — stage-1 session launcher (runs DETACHED on the pod).
+# STAGE1-LAUNCH-V12 — stage-1 session launcher (runs DETACHED on the pod).
 # Chain: fetch pinned files -> marker greps -> rtmlib install ->
 # keypoint extraction -> SYNTH GATE (known-body recovery; tolerances
 # below) -> setsid-launch stage1_session.sh. Any failed gate stops the
@@ -10,16 +10,16 @@ LOG=/workspace/stage1_launch.log
 ( while :; do cp -f "$LOG" /workspace/ComfyUI/output/stage1_launch_log_copy.txt 2>/dev/null; sleep 20; done ) &
 MIRROR_PID=$!
 trap 'kill $MIRROR_PID 2>/dev/null' EXIT
-echo "STAGE1-LAUNCH-V11 starting $(date -u)"
+echo "STAGE1-LAUNCH-V12 starting $(date -u)"
 R=https://raw.githubusercontent.com/dmbartel-source/myai-wiring
 dl() { curl -fsSL "$R/$1/runpod/$2" -o "/workspace/$2" || { echo "LAUNCH-FAIL fetch $2"; exit 1; }; }
-dl 533d45150675c0e045e10685bf5a8c5b0bf06827 stage1_fit.py
+dl 3b8da8b4689421ea58b4b6992feb8d0cbbd39fa8 stage1_fit.py
 dl 885cc23d1fd28bd6facba5ca6c6ac33e2d1b5661 stage1_session.sh
 dl c05725dad25962a1fad90bc509041a2d9418969c extract_keypoints.py
 dl 7aad95e17262c1eea2626d927ca44df235bcfa3f view_manifest.json
 dl b7d154c94ff5f6d63980c63129ca55a2bc91db01 mesh_validate.py
 dl 096fbdc35ffb0334ba9058f805dd8cfba78d239e gate_fit.py
-for pair in "stage1_fit.py STAGE1-FIT-V8" "stage1_session.sh STAGE1-SESSION-V1" \
+for pair in "stage1_fit.py STAGE1-FIT-V9" "stage1_session.sh STAGE1-SESSION-V1" \
             "extract_keypoints.py EXTRACT-KEYPOINTS-V1" "view_manifest.json STAGE1-VIEW-MANIFEST-V1" \
             "mesh_validate.py MESH-VALIDATE-V1" "gate_fit.py GATE-FIT-V8"; do
   set -- $pair
