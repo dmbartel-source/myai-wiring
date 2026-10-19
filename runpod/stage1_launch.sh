@@ -1,5 +1,5 @@
 #!/bin/bash
-# STAGE1-LAUNCH-V10 — stage-1 session launcher (runs DETACHED on the pod).
+# STAGE1-LAUNCH-V11 — stage-1 session launcher (runs DETACHED on the pod).
 # Chain: fetch pinned files -> marker greps -> rtmlib install ->
 # keypoint extraction -> SYNTH GATE (known-body recovery; tolerances
 # below) -> setsid-launch stage1_session.sh. Any failed gate stops the
@@ -10,16 +10,16 @@ LOG=/workspace/stage1_launch.log
 ( while :; do cp -f "$LOG" /workspace/ComfyUI/output/stage1_launch_log_copy.txt 2>/dev/null; sleep 20; done ) &
 MIRROR_PID=$!
 trap 'kill $MIRROR_PID 2>/dev/null' EXIT
-echo "STAGE1-LAUNCH-V10 starting $(date -u)"
+echo "STAGE1-LAUNCH-V11 starting $(date -u)"
 R=https://raw.githubusercontent.com/dmbartel-source/myai-wiring
 dl() { curl -fsSL "$R/$1/runpod/$2" -o "/workspace/$2" || { echo "LAUNCH-FAIL fetch $2"; exit 1; }; }
-dl d82c07805576b1c23ac8dea49a16b9ac7b7e3fdc stage1_fit.py
+dl 533d45150675c0e045e10685bf5a8c5b0bf06827 stage1_fit.py
 dl 885cc23d1fd28bd6facba5ca6c6ac33e2d1b5661 stage1_session.sh
 dl c05725dad25962a1fad90bc509041a2d9418969c extract_keypoints.py
 dl 7aad95e17262c1eea2626d927ca44df235bcfa3f view_manifest.json
 dl b7d154c94ff5f6d63980c63129ca55a2bc91db01 mesh_validate.py
 dl 096fbdc35ffb0334ba9058f805dd8cfba78d239e gate_fit.py
-for pair in "stage1_fit.py STAGE1-FIT-V7" "stage1_session.sh STAGE1-SESSION-V1" \
+for pair in "stage1_fit.py STAGE1-FIT-V8" "stage1_session.sh STAGE1-SESSION-V1" \
             "extract_keypoints.py EXTRACT-KEYPOINTS-V1" "view_manifest.json STAGE1-VIEW-MANIFEST-V1" \
             "mesh_validate.py MESH-VALIDATE-V1" "gate_fit.py GATE-FIT-V8"; do
   set -- $pair
@@ -71,13 +71,18 @@ echo "synth: $REC"
 cp -f /workspace/stage1/synth_true.ply /workspace/ComfyUI/output/synth_true.ply 2>/dev/null
 cp -f /workspace/stage1/synth_recovered.ply /workspace/ComfyUI/output/synth_recovered.ply 2>/dev/null
 echo "SYNTH-PLY-COPIED to ComfyUI/output (synth_true.ply, synth_recovered.ply) — copied before the verdict so a FAIL is still inspectable"
-"$VENV/bin/python" - "$REC" <<'PY' || { echo "SYNTH-GATE-FAIL: recovery outside tolerances (surface mean<=25mm, offset RMSE<=20mm, beta mean30<=0.15) — session NOT started"; exit 1; }
+"$VENV/bin/python" - "$REC" <<'PY' || { echo "SYNTH-GATE-FAIL: recovery outside tolerances (surface mean<=25mm, offset RMSE<=20mm, beta mean30<=anchor mean30+0.03; anchor mean30 field required) — session NOT started"; exit 1; }
 import re, sys
-m = re.search(r"beta max\|err\| ([\d.]+) \| beta mean\|err\|30 ([\d.]+) \| offset RMSE ([\d.]+) mm \| chest circumference err ([\d.]+|None) cm \| surface mean ([\d.]+) mm", sys.argv[1])
-assert m, "unparseable recovery line"
+m = re.search(r"beta max\|err\| ([\d.]+) \| beta mean\|err\|30 ([\d.]+) \| offset RMSE ([\d.]+) mm \| chest circumference err ([\d.]+|None) cm \| surface mean ([\d.]+) mm \| surface RMSE ([\d.]+) mm \| anchor mean30 ([\d.]+|NA)", sys.argv[1])
+assert m, "unparseable recovery line (anchor mean30 field required)"
 beta_max, beta_mean30, rmse, chest, surf = float(m.group(1)), float(m.group(2)), float(m.group(3)), m.group(4), float(m.group(5))
-ok = beta_mean30 <= 0.15 and rmse <= 20.0 and surf <= 25.0
-print(f"SYNTH-GATE {'PASS' if ok else 'FAIL'} beta_mean30={beta_mean30} beta_max_diag={beta_max} rmse_mm={rmse} surf_mean_mm={surf} chest_cm={chest}")
+surf_rmse = float(m.group(6))
+anchor_s = m.group(7)
+assert anchor_s != "NA", "anchor mean30 is NA — synth ran anchor-free; the gate cannot certify beta recovery against an anchor floor"
+anchor_mean30 = float(anchor_s)
+beta_cap = anchor_mean30 + 0.03
+ok = beta_mean30 <= beta_cap and rmse <= 20.0 and surf <= 25.0
+print(f"SYNTH-GATE {'PASS' if ok else 'FAIL'} beta_mean30={beta_mean30} beta_cap={beta_cap:.3f} (anchor {anchor_mean30}) beta_max_diag={beta_max} rmse_mm={rmse} surf_mean_mm={surf} surf_rmse_mm={surf_rmse} chest_cm={chest}")
 sys.exit(0 if ok else 1)
 PY
 echo "== launching the stage-1 session (detached)"
